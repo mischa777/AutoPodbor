@@ -96,13 +96,14 @@ const KNOWN_BRANDS = [
 
 export async function importCarFromUrl(url: string, eurRubRate = 100): Promise<ImportedCar> {
   const parsedUrl = new URL(url);
+  const source = detectListingSource(parsedUrl);
   if (!["http:", "https:"].includes(parsedUrl.protocol)) {
     throw new Error("Only HTTP and HTTPS links are supported.");
   }
 
   let { html, status } = await fetchHtml(parsedUrl.toString());
   if (status && [401, 403, 429].includes(status)) {
-    throw new Error(`AutoScout24 returned HTTP ${status}; not bypassing block pages.`);
+    throw new Error(`${source.label} returned HTTP ${status}; not bypassing block pages.`);
   }
   if (!hasListingMarkers(html.toLowerCase()) || html.length < 100_000) {
     html = await fetchHtmlWithPlaywright(parsedUrl.toString(), html);
@@ -110,11 +111,11 @@ export async function importCarFromUrl(url: string, eurRubRate = 100): Promise<I
 
   const block = assessBlockStatus(html);
   if (block.status === "blocked") {
-    throw new Error(`AutoScout24 returned block page (${block.reason || "unknown block"}); not bypassing it.`);
+    throw new Error(`${source.label} returned block page (${block.reason || "unknown block"}); not bypassing it.`);
   }
 
-  const listing = extractListingFromHtml(html, parsedUrl.toString());
-  validateListing(listing);
+  const listing = extractListingFromHtml(html, parsedUrl.toString(), source);
+  validateListing(listing, source);
   const calc = calculateImportCost(listing, eurRubRate);
   const title = listing.title || [listing.brand, listing.model, listing.firstRegistrationYear].filter(Boolean).join(" ");
   const fuel = translateFuel(listing.fuelType);
@@ -151,6 +152,14 @@ export async function importCarFromUrl(url: string, eurRubRate = 100): Promise<I
     reviewText: buildReviewText(listing, calc.warnings),
     images: uniqueStrings(listing.images).slice(0, 20).map((imageUrl) => ({ url: imageUrl, alt: title || "Фото автомобиля" })),
     warnings: [...block.warnings, ...listing.warnings, ...calc.warnings]
+  };
+}
+
+function detectListingSource(url: URL) {
+  const host = url.hostname.toLowerCase();
+  return {
+    label: host.includes("kleinanzeigen") ? "Kleinanzeigen" : "AutoScout24",
+    isKleinanzeigen: host.includes("kleinanzeigen")
   };
 }
 
@@ -195,10 +204,11 @@ async function fetchHtmlWithPlaywright(url: string, fallbackHtml: string) {
   }
 }
 
-function extractListingFromHtml(html: string, url: string): NormalizedListing {
+function extractListingFromHtml(html: string, url: string, source: { isKleinanzeigen: boolean }): NormalizedListing {
   const text = normalizeSpaces(decodeHtml(stripTags(html)));
   const title = firstString(tagText(html, "title"), meta(html, "og:title"));
   const titleFields = extractFromTitle(title || "");
+  const kleinanzeigenFields = source.isKleinanzeigen ? extractKleinanzeigenFields(html, text, title || "") : { images: [], warnings: [] };
   const jsonItems = [...extractJsonLd(html), ...extractEmbeddedJson(html)];
   const mapped = mergeListings(
     jsonItems
@@ -217,6 +227,7 @@ function extractListingFromHtml(html: string, url: string): NormalizedListing {
       images: [],
       warnings: []
     },
+    kleinanzeigenFields,
     mapped,
     textListing,
     {
@@ -300,10 +311,10 @@ function listingFromMapping(data: JsonRecord): NormalizedListing {
   };
 }
 
-function validateListing(listing: NormalizedListing) {
+function validateListing(listing: NormalizedListing, source: { label: string }) {
   const score = listingRelevanceScore(listing);
   if (score < 6) {
-    throw new Error("AutoScout24 did not return a complete listing page on this host. Try again later or import locally.");
+    throw new Error(`${source.label} returned partial listing data on this host. The importer refused to fill the form with unreliable values.`);
   }
 
   if (genericTitle(listing.title)) {
@@ -324,8 +335,14 @@ function validateListing(listing: NormalizedListing) {
   if (listing.mileageKm && listing.mileageKm < 1000) {
     listing.mileageKm = undefined;
   }
+  if (!listing.engineCc && listing.title) {
+    listing.engineCc = parseEngineCcFromTitle(listing.title);
+  }
+  if (!listing.fuelType && listing.title) {
+    listing.fuelType = inferFuelFromTitle(listing.title);
+  }
   if (!listing.brand || !listing.model || !listing.priceEur) {
-    throw new Error("AutoScout24 returned partial listing data on this host. The importer refused to fill the form with unreliable values.");
+    throw new Error(`${source.label} returned partial listing data on this host. The importer refused to fill the form with unreliable values.`);
   }
 }
 
@@ -371,6 +388,52 @@ function extractFromTitle(title: string): NormalizedListing {
     location: locationMatch?.[1] ? normalizeSpaces(locationMatch[1]) : undefined,
     images: [],
     warnings: []
+  };
+}
+
+function extractKleinanzeigenFields(html: string, text: string, title: string): NormalizedListing {
+  const cleanTitle = cleanKleinanzeigenTitle(firstString(meta(html, "og:title"), title));
+  const brandModel = extractBrandModel(cleanTitle || "");
+  const price = parsePriceEur(firstString(meta(html, "og:price:amount"), meta(html, "product:price:amount"), meta(html, "og:description"), text));
+  const firstReg = parseFirstRegistration(text.match(/(?:Erstzulassung|EZ)\s*[:\-]?\s*([A-Za-zäöüÄÖÜ]+\s+\d{4}|\d{1,2}[./]\d{4}|\d{4})/i)?.[1] || text);
+  const power = parsePower(text);
+
+  return {
+    title: cleanTitle,
+    brand: brandModel.brand,
+    model: brandModel.model,
+    priceEur: price,
+    mileageKm: parseMileageKm(text.match(/(?:Kilometerstand|Laufleistung)\s*[:\-]?\s*([\d.\s]+)\s*km/i)?.[0] || text),
+    firstRegistrationMonth: firstReg.month,
+    firstRegistrationYear: firstReg.year,
+    engineCc: parseEngineCc(text) || parseEngineCcFromTitle(cleanTitle || ""),
+    powerKw: power.kw,
+    powerHp: power.hp,
+    fuelType: normalizeFuel(text.match(/(?:Kraftstoffart|Kraftstoff)\s*[:\-]?\s*([A-Za-zäöüÄÖÜ -]+)/i)?.[1]) || inferFuelFromTitle(cleanTitle || ""),
+    gearbox: normalizeGearbox(text.match(/(?:Getriebe)\s*[:\-]?\s*([A-Za-zäöüÄÖÜ -]+)/i)?.[1]),
+    bodyType: text.match(/(?:Fahrzeugtyp|Karosserie)\s*[:\-]?\s*([A-Za-zäöüÄÖÜ -]+)/i)?.[1],
+    location: firstString(meta(html, "og:locality"), text.match(/\b\d{5}\s+([A-ZÄÖÜ][A-Za-zÄÖÜäöüß .-]+)/)?.[1]),
+    images: extractImageUrls(html),
+    description: firstString(meta(html, "og:description"), meta(html, "description")),
+    warnings: []
+  };
+}
+
+function cleanKleinanzeigenTitle(value?: string) {
+  if (!value) return undefined;
+  return normalizeSpaces(value
+    .replace(/\s*\|\s*kleinanzeigen\.de.*$/i, "")
+    .replace(/\s+in\s+.+?\s+-\s+.+$/i, ""));
+}
+
+function extractBrandModel(title: string) {
+  const match = KNOWN_BRANDS.map((brand) => ({
+    brand,
+    match: title.match(new RegExp(`\\b${escapeRegex(brand)}\\s+([A-Za-z0-9ÄÖÜäöüß-]+)`, "i"))
+  })).find((entry) => entry.match);
+  return {
+    brand: match?.brand,
+    model: match?.match?.[1]
   };
 }
 
@@ -515,12 +578,12 @@ function assessBlockStatus(html: string) {
 }
 
 function hasListingMarkers(value: string) {
-  return ["price", "preis", "mileage", "kilometerstand", "first registration", "erstzulassung", "technical data", "technische daten", "autoscout24", "leistung", "kraftstoff", "getriebe", "vehicle", "offer"].some((marker) => value.includes(marker));
+  return ["price", "preis", "mileage", "kilometerstand", "first registration", "erstzulassung", "technical data", "technische daten", "autoscout24", "kleinanzeigen", "anzeige", "leistung", "kraftstoff", "getriebe", "vehicle", "offer"].some((marker) => value.includes(marker));
 }
 
 function titleLooksLikeListing(title: string) {
   const lower = title.toLowerCase();
-  return title.includes("€") || lower.includes("für €") || lower.includes("gebraucht") || KNOWN_BRANDS.some((brand) => lower.includes(brand.toLowerCase()));
+  return title.includes("€") || lower.includes("für €") || lower.includes("gebraucht") || lower.includes("kleinanzeigen") || KNOWN_BRANDS.some((brand) => lower.includes(brand.toLowerCase()));
 }
 
 function extractJsonLd(html: string) {
@@ -603,6 +666,14 @@ function parseEngineCc(text?: string) {
   return parseIntFromText(match?.[1]);
 }
 
+function parseEngineCcFromTitle(text?: string) {
+  if (!text) return undefined;
+  const match = text.match(/\b([0-9][,.][0-9])\b/);
+  if (!match) return undefined;
+  const liters = Number(match[1].replace(",", "."));
+  return Number.isFinite(liters) && liters >= 0.6 && liters <= 6 ? Math.round(liters * 1000) : undefined;
+}
+
 function parsePower(text?: string) {
   if (!text) return { kw: undefined, hp: undefined };
   const kw = parseIntFromText(text.match(/(\d+)\s*kW/i)?.[1]);
@@ -629,6 +700,13 @@ function normalizeFuel(text?: string) {
   if (lower.includes("elektro") || lower.includes("electric")) return "electric";
   if (lower.includes("diesel")) return "diesel";
   if (lower.includes("benzin") || lower.includes("petrol") || lower.includes("gasoline")) return "benzin";
+  return undefined;
+}
+
+function inferFuelFromTitle(title: string) {
+  const lower = title.toLowerCase();
+  if (lower.includes("tdci") || lower.includes("diesel")) return "diesel";
+  if (lower.includes("ecoboost") || /\b1[,.][0-9]\b/.test(lower)) return "benzin";
   return undefined;
 }
 
