@@ -114,6 +114,7 @@ export async function importCarFromUrl(url: string, eurRubRate = 100): Promise<I
   }
 
   const listing = extractListingFromHtml(html, parsedUrl.toString());
+  validateListing(listing);
   const calc = calculateImportCost(listing, eurRubRate);
   const title = listing.title || [listing.brand, listing.model, listing.firstRegistrationYear].filter(Boolean).join(" ");
   const fuel = translateFuel(listing.fuelType);
@@ -199,20 +200,28 @@ function extractListingFromHtml(html: string, url: string): NormalizedListing {
   const title = firstString(tagText(html, "title"), meta(html, "og:title"));
   const titleFields = extractFromTitle(title || "");
   const jsonItems = [...extractJsonLd(html), ...extractEmbeddedJson(html)];
-  const mapped = mergeListings(jsonItems.map(listingFromMapping));
+  const mapped = mergeListings(
+    jsonItems
+      .map(listingFromMapping)
+      .filter((listing) => listingRelevanceScore(listing) >= 4)
+      .sort((left, right) => listingRelevanceScore(right) - listingRelevanceScore(left))
+  );
   const description = firstString(meta(html, "og:description"), meta(html, "description"), mapped.description);
-  const textListing = listingFromText(text);
+  const textListing = titleLooksLikeListing(title || "") || listingRelevanceScore(mapped) >= 5
+    ? listingFromText(text)
+    : { images: [], warnings: [] };
+  const safeTitleFields = genericTitle(titleFields.title) ? { ...titleFields, title: undefined } : titleFields;
 
   return mergeListing(
     {
       images: [],
       warnings: []
     },
-    textListing,
     mapped,
+    textListing,
     {
-      ...titleFields,
-      title: mapped.title || titleFields.title || title,
+      ...safeTitleFields,
+      title: firstNonGenericTitle(mapped.title, safeTitleFields.title, title),
       url,
       description,
       images: uniqueStrings([
@@ -289,6 +298,50 @@ function listingFromMapping(data: JsonRecord): NormalizedListing {
     description: firstString(data.description, data.subtitle),
     warnings: []
   };
+}
+
+function validateListing(listing: NormalizedListing) {
+  const score = listingRelevanceScore(listing);
+  if (score < 6) {
+    throw new Error("AutoScout24 did not return a complete listing page on this host. Try again later or import locally.");
+  }
+
+  if (genericTitle(listing.title)) {
+    listing.title = [listing.brand, listing.model, listing.firstRegistrationYear].filter(Boolean).join(" ") || undefined;
+  }
+
+  if (listing.engineCc && (listing.engineCc < 500 || listing.engineCc > 8000)) {
+    listing.engineCc = undefined;
+  }
+  if (listing.mileageKm && listing.mileageKm < 1000) {
+    listing.mileageKm = undefined;
+  }
+  if (!listing.brand || !listing.model || !listing.priceEur) {
+    throw new Error("AutoScout24 returned partial listing data on this host. The importer refused to fill the form with unreliable values.");
+  }
+}
+
+function listingRelevanceScore(listing: NormalizedListing) {
+  let score = 0;
+  if (listing.brand) score += 2;
+  if (listing.model) score += 2;
+  if (listing.priceEur && listing.priceEur > 500) score += 2;
+  if (listing.mileageKm && listing.mileageKm > 1000) score += 1;
+  if (listing.firstRegistrationYear && listing.firstRegistrationYear >= 1990) score += 1;
+  if (listing.engineCc && listing.engineCc >= 500 && listing.engineCc <= 8000) score += 1;
+  if (listing.powerHp && listing.powerHp >= 40 && listing.powerHp <= 800) score += 1;
+  if (listing.images?.length) score += 1;
+  if (listing.title && !genericTitle(listing.title)) score += 1;
+  return score;
+}
+
+function firstNonGenericTitle(...values: Array<string | undefined>) {
+  return values.find((value) => value && !genericTitle(value));
+}
+
+function genericTitle(value?: string) {
+  const normalized = normalizeSpaces(value || "").toLowerCase();
+  return !normalized || ["startseite", "autoscout24", "auto kaufen", "gebrauchtwagen"].includes(normalized);
 }
 
 function extractFromTitle(title: string): NormalizedListing {

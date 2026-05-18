@@ -10,6 +10,7 @@ import { Header } from "@/components/Header";
 import { ProsConsBlock } from "@/components/ProsConsBlock";
 import { ReviewBlock } from "@/components/ReviewBlock";
 import { StatusBadge } from "@/components/StatusBadge";
+import { WaldemarChat } from "@/components/WaldemarChat";
 import { formatEur, formatKm } from "@/lib/carTypes";
 import { getCarById } from "@/lib/cars";
 
@@ -53,6 +54,7 @@ export default async function CarPage({ params }: { params: Promise<{ id: string
           <CostCalculator car={car} />
         </div>
         <div className="mt-8 space-y-8">
+          <WaldemarChat carId={car.id} />
           <ReviewBlock text={car.reviewText} />
           <ProsConsBlock pros={car.pros} cons={car.cons} />
         </div>
