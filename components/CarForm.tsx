@@ -98,6 +98,9 @@ export function CarForm({ car, action, mode }: { car?: CarWithRelations; action:
     if (name === "serviceFeeRub") setServiceFeeEdited(true);
     setValues((current) => {
       const next = { ...current, [name]: value };
+      if (name === "priceBruttoEur") {
+        next.priceNettoEur = String(calculateNettoFromBrutto(next.priceBruttoEur));
+      }
       if (shouldRecalculateCustomsDuty(name)) {
         next.customsDutyRub = String(calculateCustomsDuty(next));
       }
@@ -326,7 +329,7 @@ function mergeImportedValues(current: FormValues, imported: ImportedCar, importU
     transmission: stringify(imported.transmission) || current.transmission,
     fuel: stringify(imported.fuel) || current.fuel,
     priceBruttoEur: stringify(imported.priceBruttoEur) || current.priceBruttoEur,
-    priceNettoEur: stringify(imported.priceNettoEur) || current.priceNettoEur,
+    priceNettoEur: stringify(calculateNettoFromBrutto(stringify(imported.priceBruttoEur) || current.priceBruttoEur)),
     eurRubRate: stringify(imported.eurRubRate) || current.eurRubRate,
     customsDutyRub: stringify(imported.customsDutyRub) || current.customsDutyRub,
     platesInsuranceRub: stringify(imported.platesInsuranceRub) || "15000",
@@ -346,6 +349,11 @@ function mergeImportedValues(current: FormValues, imported: ImportedCar, importU
 
 function stringify(value: unknown) {
   return value === undefined || value === null ? "" : String(value);
+}
+
+function calculateNettoFromBrutto(value: string) {
+  const brutto = parseNumber(value);
+  return brutto ? Math.round(brutto / 1.19) : "";
 }
 
 function shouldRecalculateServiceFee(name: keyof FormValues) {

@@ -135,7 +135,7 @@ export async function importCarFromUrl(url: string, eurRubRate = 100): Promise<I
     transmission,
     fuel,
     priceBruttoEur: listing.priceEur,
-    priceNettoEur: listing.netPriceEur,
+    priceNettoEur: calculateNettoFromBrutto(listing.priceEur),
     eurRubRate,
     customsDutyRub: calc.customsDutyRub,
     platesInsuranceRub: 15000,
@@ -317,6 +317,10 @@ function validateListing(listing: NormalizedListing) {
     listing.netPriceEur = undefined;
     listing.vatDeductible = false;
   }
+  if (listing.priceEur) {
+    listing.netPriceEur = calculateNettoFromBrutto(listing.priceEur);
+    listing.vatDeductible = true;
+  }
   if (listing.mileageKm && listing.mileageKm < 1000) {
     listing.mileageKm = undefined;
   }
@@ -408,9 +412,12 @@ function calculateServiceFeeRub(preServiceTotalRub: number, marketPriceRub?: num
 }
 
 function customsPriceEur(listing: NormalizedListing) {
-  if (listing.vatDeductible === true && listing.netPriceEur) return listing.netPriceEur;
-  if (listing.vatDeductible === true && listing.priceEur) return Math.round(listing.priceEur / 1.19);
+  if (listing.priceEur) return calculateNettoFromBrutto(listing.priceEur);
   return listing.priceEur;
+}
+
+function calculateNettoFromBrutto(priceEur?: number) {
+  return priceEur ? Math.round(priceEur / 1.19) : undefined;
 }
 
 function calculateVehicleAge(month: number, year: number) {

@@ -178,7 +178,7 @@ def listing_to_site_payload(result: Any, eur_rub_rate: float) -> dict[str, Any]:
     except Exception as exc:
       warnings.append(f"Расчет требует ручной проверки: {exc}")
 
-    taxable_price = customs_price_eur(listing)
+    taxable_price = round(listing.price_eur / 1.19) if listing.price_eur else customs_price_eur(listing)
     fuel = translate_fuel(listing.fuel_type)
     title = clean_title(listing)
 
@@ -197,7 +197,7 @@ def listing_to_site_payload(result: Any, eur_rub_rate: float) -> dict[str, Any]:
         "transmission": translate_gearbox(listing.gearbox),
         "fuel": fuel,
         "priceBruttoEur": listing.price_eur,
-        "priceNettoEur": listing.net_price_eur or (taxable_price if listing.vat_deductible and taxable_price != listing.price_eur else None),
+        "priceNettoEur": taxable_price if listing.price_eur else None,
         "eurRubRate": eur_rub_rate,
         "customsDutyRub": calc.customs_duty_rub if calc else None,
         "platesInsuranceRub": 15000,
