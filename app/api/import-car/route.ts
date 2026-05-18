@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdminRequest } from "@/lib/auth";
 import { importCarWithAutoScoutBot } from "@/lib/botImportCar";
-import { getEnergotransbankEurSellRate } from "@/lib/exchangeRate";
+import { getCachedEnergotransbankEurSellRate } from "@/lib/exchangeRate";
 import { importCarFromUrl } from "@/lib/importCar";
 
 export const maxDuration = 60;
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const rate = await getEnergotransbankEurSellRate();
+    const rate = await getCachedEnergotransbankEurSellRate();
     let car;
     try {
       car = await importCarWithAutoScoutBot(url, rate.value);

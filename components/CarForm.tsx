@@ -98,6 +98,9 @@ export function CarForm({ car, action, mode }: { car?: CarWithRelations; action:
     if (name === "serviceFeeRub") setServiceFeeEdited(true);
     setValues((current) => {
       const next = { ...current, [name]: value };
+      if (shouldRecalculateCustomsDuty(name)) {
+        next.customsDutyRub = String(calculateCustomsDuty(next));
+      }
       if (!serviceFeeEdited && shouldRecalculateServiceFee(name)) {
         next.serviceFeeRub = String(calculateRecommendedServiceFee(next));
       }
@@ -350,6 +353,9 @@ function shouldRecalculateServiceFee(name: keyof FormValues) {
     "priceBruttoEur",
     "priceNettoEur",
     "eurRubRate",
+    "year",
+    "month",
+    "engineVolumeCm3",
     "customsDutyRub",
     "platesInsuranceRub",
     "transportRub",
@@ -359,6 +365,34 @@ function shouldRecalculateServiceFee(name: keyof FormValues) {
     "serviceFeePercent",
     "marketPriceRub"
   ].includes(name);
+}
+
+function shouldRecalculateCustomsDuty(name: keyof FormValues) {
+  return ["engineVolumeCm3", "eurRubRate", "year", "month"].includes(name);
+}
+
+function calculateCustomsDuty(values: FormValues) {
+  const engineCc = parseNumber(values.engineVolumeCm3);
+  const eurRubRate = parseNumber(values.eurRubRate);
+  if (!engineCc || !eurRubRate) return parseNumber(values.customsDutyRub);
+  const rate = getCustomsRateEurPerCc(calculateVehicleAge(values), engineCc);
+  return Math.round(engineCc * rate * eurRubRate);
+}
+
+function calculateVehicleAge(values: FormValues) {
+  const year = parseNumber(values.year);
+  const month = parseNumber(values.month) || 1;
+  if (!year) return 3;
+  const now = new Date();
+  const months = (now.getFullYear() - year) * 12 + (now.getMonth() + 1 - month);
+  return Math.max(months, 0) / 12;
+}
+
+function getCustomsRateEurPerCc(ageYears: number, engineCc: number) {
+  const bands = ageYears <= 5
+    ? [[1000, 1.5], [1500, 1.7], [1800, 2.5], [2300, 2.7], [3000, 3.0], [Infinity, 3.6]]
+    : [[1000, 3.0], [1500, 3.2], [1800, 3.5], [2300, 4.8], [3000, 5.0], [Infinity, 5.7]];
+  return bands.find(([max]) => engineCc <= max)?.[1] || 3.6;
 }
 
 function calculateRecommendedServiceFee(values: FormValues) {

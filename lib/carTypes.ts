@@ -70,7 +70,7 @@ export const statusTone: Record<CarStatus, string> = {
   archived: "bg-rose-50 text-rose-700 ring-rose-200"
 };
 
-export function calculateTotalRub(car: Pick<CarWithRelations, "priceBruttoEur" | "priceNettoEur" | "eurRubRate" | "customsDutyRub" | "platesInsuranceRub" | "transportRub" | "customsFeeRub" | "recyclingFeeRub" | "customsChecksRub" | "serviceFeeRub">) {
+export function calculatePreServiceTotalRub(car: Pick<CarWithRelations, "priceBruttoEur" | "priceNettoEur" | "eurRubRate" | "customsDutyRub" | "platesInsuranceRub" | "transportRub" | "customsFeeRub" | "recyclingFeeRub" | "customsChecksRub">) {
   const taxablePriceEur = car.priceNettoEur ?? car.priceBruttoEur;
   return (
     taxablePriceEur * car.eurRubRate +
@@ -79,9 +79,23 @@ export function calculateTotalRub(car: Pick<CarWithRelations, "priceBruttoEur" |
     car.transportRub +
     car.customsFeeRub +
     car.recyclingFeeRub +
-    car.customsChecksRub +
-    (car.serviceFeeRub ?? 0)
+    car.customsChecksRub
   );
+}
+
+export function calculateServiceFeeRub(car: Pick<CarWithRelations, "priceBruttoEur" | "priceNettoEur" | "eurRubRate" | "customsDutyRub" | "platesInsuranceRub" | "transportRub" | "customsFeeRub" | "recyclingFeeRub" | "customsChecksRub" | "serviceFeeRub" | "serviceFeePercent" | "marketPriceRub">) {
+  if (car.serviceFeeRub) return car.serviceFeeRub;
+  const preServiceTotal = calculatePreServiceTotalRub(car);
+  const percent = car.serviceFeePercent || 7;
+  const base = Math.round(preServiceTotal * (percent / 100));
+  if (!car.marketPriceRub || car.marketPriceRub <= preServiceTotal) return base;
+  const marginBased = Math.round((car.marketPriceRub - preServiceTotal) * 0.25);
+  const cap = Math.round(preServiceTotal * 0.12);
+  return Math.max(base, Math.min(Math.max(base, marginBased), cap));
+}
+
+export function calculateTotalRub(car: Pick<CarWithRelations, "priceBruttoEur" | "priceNettoEur" | "eurRubRate" | "customsDutyRub" | "platesInsuranceRub" | "transportRub" | "customsFeeRub" | "recyclingFeeRub" | "customsChecksRub" | "serviceFeeRub" | "serviceFeePercent" | "marketPriceRub">) {
+  return calculatePreServiceTotalRub(car) + calculateServiceFeeRub(car);
 }
 
 export function formatRub(value: number) {

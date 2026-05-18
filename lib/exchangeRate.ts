@@ -5,6 +5,39 @@ export type ExchangeRate = {
 };
 
 const FALLBACK_EUR_RUB = 100;
+const CACHE_TTL_MS = 60 * 60 * 1000;
+
+type CachedExchangeRate = ExchangeRate & {
+  updatedAt?: string;
+};
+
+export async function getCachedEnergotransbankEurSellRate(): Promise<ExchangeRate> {
+  if (typeof window !== "undefined") {
+    return getEnergotransbankEurSellRate();
+  }
+
+  try {
+    const { getAdminFirestore } = await import("@/lib/firebaseServer");
+    const docRef = getAdminFirestore().collection("settings").doc("exchangeRate");
+    const snapshot = await docRef.get();
+    const cached = snapshot.exists ? snapshot.data() as CachedExchangeRate : undefined;
+    const cachedAt = cached?.fetchedAt ? Date.parse(cached.fetchedAt) : 0;
+
+    if (cached?.value && Number.isFinite(cached.value) && Date.now() - cachedAt < CACHE_TTL_MS) {
+      return {
+        value: cached.value,
+        source: cached.source || "cached",
+        fetchedAt: cached.fetchedAt
+      };
+    }
+
+    const fresh = await getEnergotransbankEurSellRate();
+    await docRef.set({ ...fresh, updatedAt: new Date().toISOString() }, { merge: true });
+    return fresh;
+  } catch {
+    return getEnergotransbankEurSellRate();
+  }
+}
 
 export async function getEnergotransbankEurSellRate(): Promise<ExchangeRate> {
   const fetchedAt = new Date().toISOString();

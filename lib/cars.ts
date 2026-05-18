@@ -1,5 +1,6 @@
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import type { CarImage, CarInput, CarStatus, CarTextItem, CarWithRelations } from "@/lib/carTypes";
+import { getCachedEnergotransbankEurSellRate } from "@/lib/exchangeRate";
 import { getAdminFirestore } from "@/lib/firebaseServer";
 
 export type { CarImage, CarInput, CarStatus, CarTextItem, CarWithRelations } from "@/lib/carTypes";
@@ -12,17 +13,19 @@ export async function getFeaturedCars() {
 }
 
 export async function getAllCars() {
+  const rate = await getCachedEnergotransbankEurSellRate();
   const snapshot = await getAdminFirestore()
     .collection(carsCollection)
     .orderBy("updatedAt", "desc")
     .get();
 
-  return snapshot.docs.map(mapCarDocument);
+  return snapshot.docs.map((doc) => withLiveRate(mapCarDocument(doc), rate.value));
 }
 
 export async function getCarById(id: string) {
+  const rate = await getCachedEnergotransbankEurSellRate();
   const snapshot = await getAdminFirestore().collection(carsCollection).doc(id).get();
-  return snapshot.exists ? mapCarDocument(snapshot) : null;
+  return snapshot.exists ? withLiveRate(mapCarDocument(snapshot), rate.value) : null;
 }
 
 export async function createCar(data: CarInput) {
@@ -123,6 +126,13 @@ function mapCarDocument(snapshot: FirebaseFirestore.DocumentSnapshot): CarWithRe
     cons: orderedItems<CarTextItem>(data.cons),
     createdAt: dateValue(data.createdAt),
     updatedAt: dateValue(data.updatedAt)
+  };
+}
+
+function withLiveRate(car: CarWithRelations, eurRubRate: number): CarWithRelations {
+  return {
+    ...car,
+    eurRubRate: eurRubRate || car.eurRubRate
   };
 }
 

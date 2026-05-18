@@ -313,6 +313,10 @@ function validateListing(listing: NormalizedListing) {
   if (listing.engineCc && (listing.engineCc < 500 || listing.engineCc > 8000)) {
     listing.engineCc = undefined;
   }
+  if (listing.netPriceEur && listing.priceEur && (listing.netPriceEur < listing.priceEur * 0.5 || listing.netPriceEur > listing.priceEur)) {
+    listing.netPriceEur = undefined;
+    listing.vatDeductible = false;
+  }
   if (listing.mileageKm && listing.mileageKm < 1000) {
     listing.mileageKm = undefined;
   }
@@ -574,7 +578,9 @@ function parsePriceEur(text?: string) {
 
 function parseNetPriceEur(text?: string) {
   if (!text) return undefined;
-  const match = text.match(/([\d.\s]+)\s*€?\s*\(?\s*Netto/i) || text.match(/Netto\D*([\d.\s]+)/i);
+  const match = text.match(/(?:€|EUR)\s*([\d.\s]{4,})\s*\(?\s*Netto/i)
+    || text.match(/([\d.\s]{4,})\s*(?:€|EUR)?\s*\(?\s*Netto/i)
+    || text.match(/Netto\D{0,20}([\d.\s]{4,})/i);
   return parseIntFromText(match?.[1]);
 }
 
