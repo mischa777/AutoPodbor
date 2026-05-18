@@ -1,0 +1,81 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Car {
+  id                  String      @id @default(cuid())
+  title               String
+  brand               String
+  model               String
+  year                Int
+  month               Int?
+  mileageKm           Int
+  bodyType            String?
+  engineDescription   String
+  engineVolumeCm3     Int?
+  powerHp             Int?
+  transmission        String
+  fuel                String
+  priceBruttoEur      Float
+  priceNettoEur       Float?
+  eurRubRate          Float       @default(100)
+  customsDutyRub      Float       @default(0)
+  platesInsuranceRub  Float       @default(0)
+  transportRub        Float       @default(0)
+  customsFeeRub       Float       @default(0)
+  recyclingFeeRub     Float       @default(0)
+  customsChecksRub    Float       @default(0)
+  serviceFeeRub       Float?
+  serviceFeePercent   Float       @default(7)
+  marketPriceRub      Float?
+  location            String?
+  sourceUrl           String?
+  shortDescription    String?
+  reviewText          String?
+  status              CarStatus   @default(available)
+  isFeatured          Boolean     @default(true)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+  images              CarImage[]
+  pros                CarPro[]
+  cons                CarCon[]
+}
+
+model CarImage {
+  id        String   @id @default(cuid())
+  url       String
+  alt       String?
+  order     Int      @default(0)
+  car       Car      @relation(fields: [carId], references: [id], onDelete: Cascade)
+  carId     String
+}
+
+model CarPro {
+  id        String   @id @default(cuid())
+  title     String
+  text      String
+  order     Int      @default(0)
+  car       Car      @relation(fields: [carId], references: [id], onDelete: Cascade)
+  carId     String
+}
+
+model CarCon {
+  id        String   @id @default(cuid())
+  title     String
+  text      String
+  order     Int      @default(0)
+  car       Car      @relation(fields: [carId], references: [id], onDelete: Cascade)
+  carId     String
+}
+
+enum CarStatus {
+  available
+  checking
+  sold
+  archived
+}
