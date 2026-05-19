@@ -1,0 +1,271 @@
+import { getCachedEnergotransbankEurSellRate } from "@/lib/exchangeRate";
+import { importCarFromUrl, type ImportedCar } from "@/lib/importCar";
+import { candidateIdFromUrl, setCandidateTelegramMessage, upsertCandidate, type TelegramCandidate } from "@/lib/telegramCandidates";
+import { sendTelegramMessage } from "@/lib/telegram";
+
+export type ScanResult = {
+  sources: number;
+  links: number;
+  imported: number;
+  sent: number;
+  skipped: number;
+  errors: string[];
+};
+
+const excludeMarkers = [
+  "electric",
+  "elektro",
+  "гибрид",
+  "hybrid",
+  "plug-in",
+  "plugin",
+  "phev",
+  "motorschaden",
+  "getriebeschaden",
+  "bastlerfahrzeug",
+  "nicht fahrbereit",
+  "defekt",
+  "teileträger",
+  "ohne papiere",
+  "unfallfahrzeug ja",
+  "totalschaden"
+];
+
+export async function scanConfiguredCarSearches(): Promise<ScanResult> {
+  const sources = expandSearchPages(getScanUrls());
+  const result: ScanResult = {
+    sources: sources.length,
+    links: 0,
+    imported: 0,
+    sent: 0,
+    skipped: 0,
+    errors: []
+  };
+  const rate = await getCachedEnergotransbankEurSellRate();
+  const seen = new Set<string>();
+
+  for (const sourceUrl of sources) {
+    let links: string[] = [];
+    try {
+      links = await extractListingLinks(sourceUrl);
+    } catch (error) {
+      result.errors.push(`${sourceUrl}: ${errorMessage(error)}`);
+      continue;
+    }
+
+    for (const link of links) {
+      const normalized = normalizeUrl(link);
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      result.links += 1;
+
+      try {
+        const imported = await importCarFromUrl(normalized, rate.value);
+        imported.eurRubRate = rate.value;
+        imported.exchangeRateSource = rate.source;
+        result.imported += 1;
+
+        const filter = getSuitability(imported);
+        if (!filter.passed) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const candidate = await upsertCandidate(imported, sourceUrl);
+        if (candidate.status !== "new" || candidate.telegramMessageId) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const message = await sendTelegramMessage(formatCandidateMessage(candidate, filter.reasons), candidateKeyboard(candidate.id, imported.sourceUrl));
+        await setCandidateTelegramMessage(candidate.id, message.message_id);
+        result.sent += 1;
+      } catch (error) {
+        result.errors.push(`${normalized}: ${errorMessage(error)}`);
+      }
+    }
+  }
+
+  return result;
+}
+
+export function candidateKeyboard(candidateId: string, sourceUrl?: string) {
+  return [
+    [{ text: "Сформировать описание", callback_data: `describe:${candidateId}` }],
+    [{ text: "Добавить в подборку", callback_data: `publish:${candidateId}` }],
+    [
+      ...(sourceUrl ? [{ text: "Открыть объявление", url: sourceUrl }] : []),
+      { text: "Пропустить", callback_data: `skip:${candidateId}` }
+    ]
+  ].filter((row) => row.length);
+}
+
+export function candidateAfterDescriptionKeyboard(candidateId: string, sourceUrl?: string) {
+  return [
+    [{ text: "Добавить в подборку", callback_data: `publish:${candidateId}` }],
+    [
+      ...(sourceUrl ? [{ text: "Открыть объявление", url: sourceUrl }] : []),
+      { text: "Пропустить", callback_data: `skip:${candidateId}` }
+    ]
+  ].filter((row) => row.length);
+}
+
+export function formatCandidateMessage(candidate: TelegramCandidate, reasons: string[] = []) {
+  const car = candidate.car;
+  return [
+    "Найден подходящий вариант",
+    "",
+    car.title || [car.brand, car.model, car.year].filter(Boolean).join(" "),
+    [
+      car.year ? `${car.year} г.` : undefined,
+      car.mileageKm ? `${formatNumber(car.mileageKm)} км` : undefined,
+      car.fuel,
+      car.powerHp ? `${car.powerHp} л.с.` : undefined,
+      car.engineVolumeCm3 ? `${formatNumber(car.engineVolumeCm3)} см3` : undefined,
+      car.transmission
+    ].filter(Boolean).join(" | "),
+    car.priceBruttoEur ? `Цена: ${formatNumber(car.priceBruttoEur)} EUR brutto` : undefined,
+    car.priceNettoEur ? `Netto: ${formatNumber(car.priceNettoEur)} EUR` : undefined,
+    car.serviceFeeRub ? `Цена под ключ ориентир: ${formatNumber(estimatedTotalRub(car))} RUB` : undefined,
+    car.location ? `Локация: ${car.location}` : undefined,
+    reasons.length ? `Почему прошло фильтр: ${reasons.join(", ")}` : undefined,
+    "",
+    "Дальше можно сформировать сухое описание или сразу добавить машину в подборку."
+  ].filter(Boolean).join("\n");
+}
+
+export function formatCandidateWithContent(candidate: TelegramCandidate) {
+  const content = candidate.content;
+  if (!content) return formatCandidateMessage(candidate);
+  return [
+    formatCandidateMessage(candidate),
+    "",
+    "Описание",
+    content.shortDescription,
+    "",
+    "Обзор",
+    content.reviewText,
+    "",
+    "Плюсы",
+    ...content.pros.map((item) => `- ${item.title}: ${item.text}`),
+    "",
+    "Минусы",
+    ...content.cons.map((item) => `- ${item.title}: ${item.text}`)
+  ].join("\n");
+}
+
+async function extractListingLinks(searchUrl: string) {
+  const html = await fetchSearchHtml(searchUrl);
+  return uniqueStrings([...extractAutoScoutLinks(html, searchUrl), ...extractKleinanzeigenLinks(html, searchUrl)])
+    .slice(0, getNumberEnv("CAR_SCAN_MAX_LINKS", 30));
+}
+
+async function fetchSearchHtml(url: string) {
+  const response = await fetch(url, {
+    headers: {
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "accept-language": "de-DE,de;q=0.9,en;q=0.8,ru;q=0.7",
+      "user-agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    },
+    cache: "no-store"
+  });
+  if (!response.ok) throw new Error(`Search page returned ${response.status}.`);
+  return response.text();
+}
+
+function extractAutoScoutLinks(html: string, baseUrl: string) {
+  return [...html.matchAll(/href=["']([^"']*\/angebote\/[^"']+)["']/gi)]
+    .map((match) => absoluteUrl(match[1], baseUrl))
+    .filter((url) => url.includes("autoscout24."));
+}
+
+function extractKleinanzeigenLinks(html: string, baseUrl: string) {
+  return [...html.matchAll(/href=["']([^"']*\/s-anzeige\/[^"']+)["']/gi)]
+    .map((match) => absoluteUrl(match[1], baseUrl))
+    .filter((url) => url.includes("kleinanzeigen."));
+}
+
+function getSuitability(car: ImportedCar) {
+  const reasons: string[] = [];
+  const text = [car.title, car.brand, car.model, car.fuel, car.engineDescription, car.shortDescription, car.reviewText].filter(Boolean).join(" ").toLowerCase();
+  if (!car.sourceUrl || !car.brand || !car.model || !car.priceBruttoEur) return { passed: false, reasons };
+  if (excludeMarkers.some((marker) => text.includes(marker))) return { passed: false, reasons };
+  if (car.fuel && !/(дизель|бензин|diesel|benzin|petrol|gasoline)/i.test(car.fuel)) return { passed: false, reasons };
+  if (car.powerHp && car.powerHp > getNumberEnv("CAR_SCAN_MAX_POWER_HP", 160)) return { passed: false, reasons };
+  if (car.engineVolumeCm3 && car.engineVolumeCm3 > getNumberEnv("CAR_SCAN_MAX_ENGINE_CC", 1900)) return { passed: false, reasons };
+  if (car.priceBruttoEur > getNumberEnv("CAR_SCAN_MAX_PRICE_EUR", 15000)) return { passed: false, reasons };
+  if (car.mileageKm && car.mileageKm > getNumberEnv("CAR_SCAN_MAX_MILEAGE_KM", 180000)) return { passed: false, reasons };
+
+  if (car.powerHp) reasons.push(`до ${getNumberEnv("CAR_SCAN_MAX_POWER_HP", 160)} л.с.`);
+  if (car.engineVolumeCm3) reasons.push("объем подходит");
+  if (car.priceBruttoEur) reasons.push("цена в лимите");
+  if (car.mileageKm) reasons.push("пробег в лимите");
+  return { passed: true, reasons };
+}
+
+function getScanUrls() {
+  return uniqueStrings((process.env.CAR_SCAN_URLS || "")
+    .split(/[\n,]+/)
+    .map((url) => url.trim())
+    .filter(Boolean));
+}
+
+function expandSearchPages(urls: string[]) {
+  const pages = Math.max(1, getNumberEnv("CAR_SCAN_PAGES", 1));
+  if (pages === 1) return urls;
+  return urls.flatMap((url) => {
+    try {
+      const parsed = new URL(url);
+      return Array.from({ length: pages }, (_, index) => {
+        parsed.searchParams.set("page", String(index + 1));
+        return parsed.toString();
+      });
+    } catch {
+      return [url];
+    }
+  });
+}
+
+function estimatedTotalRub(car: ImportedCar) {
+  const taxablePriceEur = car.priceNettoEur || car.priceBruttoEur || 0;
+  return Math.round(
+    taxablePriceEur * (car.eurRubRate || 0) +
+    (car.customsDutyRub || 0) +
+    (car.platesInsuranceRub || 0) +
+    (car.transportRub || 0) +
+    (car.customsFeeRub || 0) +
+    (car.recyclingFeeRub || 0) +
+    (car.customsChecksRub || 0) +
+    (car.serviceFeeRub || 0)
+  );
+}
+
+function absoluteUrl(url: string, baseUrl: string) {
+  try {
+    return new URL(url, baseUrl).toString();
+  } catch {
+    return url;
+  }
+}
+
+function normalizeUrl(url: string) {
+  return url;
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(value);
+}
+
+function getNumberEnv(name: string, fallback: number) {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Unknown error";
+}

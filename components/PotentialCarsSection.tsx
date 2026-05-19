@@ -6,7 +6,7 @@ import type { CarStatus, CarWithRelations } from "@/lib/carTypes";
 import { calculateTotalRub, formatRub, statusLabels } from "@/lib/carTypes";
 import { CarCard } from "@/components/CarCard";
 
-type SortMode = "price_asc" | "price_desc";
+type SortMode = "newest" | "price_asc" | "price_desc";
 
 type Filters = {
   bodyType: string;
@@ -23,7 +23,7 @@ const initialFilters: Filters = {
   maxPriceRub: "",
   status: "",
   engine: "",
-  sort: "price_asc"
+  sort: "newest"
 };
 
 export function PotentialCarsSection({ cars }: { cars: CarWithRelations[] }) {
@@ -50,6 +50,9 @@ export function PotentialCarsSection({ cars }: { cars: CarWithRelations[] }) {
         return true;
       })
       .sort((left, right) => {
+        if (filters.sort === "newest") {
+          return dateTime(right.updatedAt || right.createdAt) - dateTime(left.updatedAt || left.createdAt);
+        }
         const diff = calculateTotalRub(left) - calculateTotalRub(right);
         return filters.sort === "price_asc" ? diff : -diff;
       });
@@ -126,6 +129,7 @@ export function PotentialCarsSection({ cars }: { cars: CarWithRelations[] }) {
               <label className="block">
                 <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-muted">Сортировка</span>
                 <select className="input bg-white" value={filters.sort} onChange={(event) => setFilter("sort", event.target.value as SortMode)}>
+                  <option value="newest">Сначала новые</option>
                   <option value="price_asc">Цена: сначала ниже</option>
                   <option value="price_desc">Цена: сначала выше</option>
                 </select>
@@ -164,6 +168,12 @@ function FilterInput({ label, value, onChange }: { label: string; value: string;
 
 function parseNumber(value: string) {
   const parsed = Number(value.replace(/\s/g, "").replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function dateTime(value?: string | null) {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
