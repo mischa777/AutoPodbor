@@ -10,6 +10,18 @@ export type ScanResult = {
   sent: number;
   skipped: number;
   errors: string[];
+  debug?: ScanSourceDebug[];
+};
+
+type ScanSourceDebug = {
+  url: string;
+  status?: number;
+  htmlLength?: number;
+  autoscoutMarkers?: number;
+  kleinanzeigenMarkers?: number;
+  listingMarkers?: number;
+  links?: number;
+  sampleLinks?: string[];
 };
 
 const excludeMarkers = [
@@ -31,7 +43,7 @@ const excludeMarkers = [
   "totalschaden"
 ];
 
-export async function scanConfiguredCarSearches(): Promise<ScanResult> {
+export async function scanConfiguredCarSearches(options: { debug?: boolean } = {}): Promise<ScanResult> {
   const sources = expandSearchPages(getScanUrls());
   const result: ScanResult = {
     sources: sources.length,
@@ -39,7 +51,8 @@ export async function scanConfiguredCarSearches(): Promise<ScanResult> {
     imported: 0,
     sent: 0,
     skipped: 0,
-    errors: []
+    errors: [],
+    debug: options.debug ? [] : undefined
   };
   const rate = await getCachedEnergotransbankEurSellRate();
   const seen = new Set<string>();
@@ -47,7 +60,9 @@ export async function scanConfiguredCarSearches(): Promise<ScanResult> {
   for (const sourceUrl of sources) {
     let links: string[] = [];
     try {
-      links = await extractListingLinks(sourceUrl);
+      const extracted = await extractListingLinks(sourceUrl);
+      links = extracted.links;
+      if (options.debug) result.debug?.push(extracted.debug);
     } catch (error) {
       result.errors.push(`${sourceUrl}: ${errorMessage(error)}`);
       continue;
@@ -155,9 +170,23 @@ export function formatCandidateWithContent(candidate: TelegramCandidate) {
 }
 
 async function extractListingLinks(searchUrl: string) {
-  const html = await fetchSearchHtml(searchUrl);
-  return uniqueStrings([...extractAutoScoutLinks(html, searchUrl), ...extractKleinanzeigenLinks(html, searchUrl)])
+  const fetched = await fetchSearchHtml(searchUrl);
+  const html = normalizeSearchHtml(fetched.html);
+  const links = uniqueStrings([...extractAutoScoutLinks(html, searchUrl), ...extractKleinanzeigenLinks(html, searchUrl)])
     .slice(0, getNumberEnv("CAR_SCAN_MAX_LINKS", 30));
+  return {
+    links,
+    debug: {
+      url: searchUrl,
+      status: fetched.status,
+      htmlLength: fetched.html.length,
+      autoscoutMarkers: countMatches(html, /\/angebote\//gi),
+      kleinanzeigenMarkers: countMatches(html, /\/s-anzeige\//gi),
+      listingMarkers: countMatches(html, /(?:list-item|data-guid|firstRegistration|vehicle|angebote|s-anzeige)/gi),
+      links: links.length,
+      sampleLinks: links.slice(0, 3)
+    }
+  };
 }
 
 async function fetchSearchHtml(url: string) {
@@ -171,18 +200,26 @@ async function fetchSearchHtml(url: string) {
     cache: "no-store"
   });
   if (!response.ok) throw new Error(`Search page returned ${response.status}.`);
-  return response.text();
+  return { html: await response.text(), status: response.status };
 }
 
 function extractAutoScoutLinks(html: string, baseUrl: string) {
-  return [...html.matchAll(/href=["']([^"']*\/angebote\/[^"']+)["']/gi)]
-    .map((match) => absoluteUrl(match[1], baseUrl))
+  return [
+    ...html.matchAll(/href=["']([^"']*\/angebote\/[^"']+)["']/gi),
+    ...html.matchAll(/["'](https?:\/\/[^"']*autoscout24\.[^"']*\/angebote\/[^"']+)["']/gi),
+    ...html.matchAll(/["'](\/angebote\/[^"']+)["']/gi)
+  ]
+    .map((match) => cleanListingUrl(absoluteUrl(match[1], baseUrl)))
     .filter((url) => url.includes("autoscout24."));
 }
 
 function extractKleinanzeigenLinks(html: string, baseUrl: string) {
-  return [...html.matchAll(/href=["']([^"']*\/s-anzeige\/[^"']+)["']/gi)]
-    .map((match) => absoluteUrl(match[1], baseUrl))
+  return [
+    ...html.matchAll(/href=["']([^"']*\/s-anzeige\/[^"']+)["']/gi),
+    ...html.matchAll(/["'](https?:\/\/[^"']*kleinanzeigen\.[^"']*\/s-anzeige\/[^"']+)["']/gi),
+    ...html.matchAll(/["'](\/s-anzeige\/[^"']+)["']/gi)
+  ]
+    .map((match) => cleanListingUrl(absoluteUrl(match[1], baseUrl)))
     .filter((url) => url.includes("kleinanzeigen."));
 }
 
@@ -249,6 +286,24 @@ function absoluteUrl(url: string, baseUrl: string) {
   }
 }
 
+function cleanListingUrl(url: string) {
+  return url
+    .replace(/\\u002F/g, "/")
+    .replace(/\\u0026/g, "&")
+    .replace(/\\\//g, "/")
+    .replace(/&amp;/g, "&")
+    .replace(/[),.;\\]+$/, "");
+}
+
+function normalizeSearchHtml(html: string) {
+  return html
+    .replace(/\\u002F/g, "/")
+    .replace(/\\u0026/g, "&")
+    .replace(/\\\//g, "/")
+    .replace(/&quot;/g, "\"")
+    .replace(/&amp;/g, "&");
+}
+
 function normalizeUrl(url: string) {
   return url;
 }
@@ -259,6 +314,10 @@ function uniqueStrings(values: string[]) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(value);
+}
+
+function countMatches(text: string, pattern: RegExp) {
+  return [...text.matchAll(pattern)].length;
 }
 
 function getNumberEnv(name: string, fallback: number) {

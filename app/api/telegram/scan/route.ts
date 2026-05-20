@@ -10,7 +10,8 @@ export async function GET(request: Request) {
   }
 
   try {
-    const result = await scanConfiguredCarSearches();
+    const url = new URL(request.url);
+    const result = await scanConfiguredCarSearches({ debug: url.searchParams.get("debug") === "1" });
     return NextResponse.json(result);
   } catch (error) {
     return NextResponse.json(
