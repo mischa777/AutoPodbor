@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCarById, updateCarStatus, type CarStatus, type CarWithRelations } from "@/lib/cars";
-import { answerCallbackQuery, editTelegramMessage, sendTelegramForceReply, type TelegramCallbackQuery, type TelegramTextMessage } from "@/lib/telegram";
+import { answerCallbackQuery, editTelegramMessage, sendTelegramForceReply, sendTelegramMessageToChat, type TelegramCallbackQuery, type TelegramTextMessage } from "@/lib/telegram";
 import {
   applyTelegramEdit,
   clearTelegramEditSession,
@@ -64,14 +64,15 @@ export async function POST(request: Request) {
       const candidateId = parts[0];
       await answerCallbackQuery(callback.id, "Добавляю в подборку");
       const carId = await publishCandidate(candidateId);
-      await removeCurrentFromTelegramQueue();
+      const queue = await removeCurrentFromTelegramQueue();
       const candidate = await getCandidate(candidateId);
-      await editTelegramMessage(
+      await sendTelegramMessageToChat(
         chatId,
-        messageId,
         [`Добавлено в подборку.`, `ID: ${carId}`, "", candidate ? formatCandidateMessage(candidate) : undefined].filter(Boolean).join("\n"),
         publishedCarKeyboard(carId)
       );
+      const rendered = await renderTelegramQueue(queue);
+      await editTelegramMessage(chatId, messageId, rendered.text, rendered.keyboard);
       return NextResponse.json({ ok: true });
     }
 
@@ -155,6 +156,12 @@ export async function POST(request: Request) {
 }
 
 async function handleTextMessage(message: TelegramTextMessage) {
+  if (isQueueRequest(message.text)) {
+    const rendered = await renderTelegramQueue();
+    await sendTelegramMessageToChat(message.chat.id, rendered.text, rendered.keyboard);
+    return;
+  }
+
   const session = await getTelegramEditSession(message.chat.id);
   if (!session || !message.text) return;
   if (session.promptMessageId && message.reply_to_message?.message_id !== session.promptMessageId) return;
@@ -194,6 +201,11 @@ function statusLabel(status: CarStatus) {
   if (status === "checking") return "проверяется";
   if (status === "sold") return "продано";
   return "архив";
+}
+
+function isQueueRequest(text?: string) {
+  const normalized = text?.trim().toLowerCase();
+  return normalized === "очередь" || normalized === "queue" || normalized === "следующий";
 }
 
 function formatPublishedCarMessage(car: CarWithRelations) {

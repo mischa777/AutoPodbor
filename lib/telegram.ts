@@ -47,6 +47,10 @@ export function hasTelegramConfig() {
 
 export async function sendTelegramMessage(text: string, keyboard?: InlineKeyboard) {
   const chatId = requiredEnv("TELEGRAM_CHAT_ID");
+  return sendTelegramMessageToChat(chatId, text, keyboard);
+}
+
+export async function sendTelegramMessageToChat(chatId: number | string, text: string, keyboard?: InlineKeyboard) {
   return telegramRequest<TelegramMessage>("sendMessage", {
     chat_id: chatId,
     text: trimTelegramText(text),
