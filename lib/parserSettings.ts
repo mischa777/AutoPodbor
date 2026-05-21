@@ -4,6 +4,7 @@ import { getAdminFirestore } from "@/lib/firebaseServer";
 export type ParserSettings = {
   searchUrls: string[];
   budgetRub: number;
+  minYear: number;
   maxPriceEur: number;
   maxMileageKm: number;
   maxPowerHp: number;
@@ -20,6 +21,7 @@ export async function getParserSettings(): Promise<ParserSettings> {
   return normalizeParserSettings({
     searchUrls: Array.isArray(data.searchUrls) ? data.searchUrls : getEnvSearchUrls(),
     budgetRub: data.budgetRub ?? process.env.CAR_SCAN_BUDGET_RUB,
+    minYear: data.minYear ?? process.env.CAR_SCAN_MIN_YEAR,
     maxPriceEur: data.maxPriceEur ?? process.env.CAR_SCAN_MAX_PRICE_EUR,
     maxMileageKm: data.maxMileageKm ?? process.env.CAR_SCAN_MAX_MILEAGE_KM,
     maxPowerHp: data.maxPowerHp ?? process.env.CAR_SCAN_MAX_POWER_HP,
@@ -45,6 +47,7 @@ export function normalizeParserSettings(input: Partial<ParserSettings>): ParserS
   return {
     searchUrls: normalizeSearchUrls(input.searchUrls),
     budgetRub: positiveNumber(input.budgetRub, 2_500_000),
+    minYear: positiveNumber(input.minYear, 2021),
     maxPriceEur: positiveNumber(input.maxPriceEur, 15_000),
     maxMileageKm: positiveNumber(input.maxMileageKm, 180_000),
     maxPowerHp: positiveNumber(input.maxPowerHp, 160),

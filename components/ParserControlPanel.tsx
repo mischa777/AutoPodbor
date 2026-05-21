@@ -12,6 +12,7 @@ type ApiResult = Record<string, unknown>;
 type ParserSettingsForm = {
   searchUrlsText: string;
   budgetRub: string;
+  minYear: string;
   maxPriceEur: string;
   maxMileageKm: string;
   maxPowerHp: string;
@@ -24,6 +25,7 @@ export function ParserControlPanel({ initialSettings }: ParserControlPanelProps)
   const [settings, setSettings] = useState<ParserSettingsForm>({
     searchUrlsText: initialSettings.searchUrls.join("\n"),
     budgetRub: String(initialSettings.budgetRub),
+    minYear: String(initialSettings.minYear),
     maxPriceEur: String(initialSettings.maxPriceEur),
     maxMileageKm: String(initialSettings.maxMileageKm),
     maxPowerHp: String(initialSettings.maxPowerHp),
@@ -104,6 +106,7 @@ export function ParserControlPanel({ initialSettings }: ParserControlPanelProps)
 
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <NumberInput label="Бюджет под ключ, ₽" value={settings.budgetRub} onChange={(value) => setField("budgetRub", value)} />
+        <NumberInput label="Год от" value={settings.minYear} onChange={(value) => setField("minYear", value)} />
         <NumberInput label="Цена в Германии до, EUR" value={settings.maxPriceEur} onChange={(value) => setField("maxPriceEur", value)} />
         <NumberInput label="Пробег до, км" value={settings.maxMileageKm} onChange={(value) => setField("maxMileageKm", value)} />
         <NumberInput label="Мощность до, л.с." value={settings.maxPowerHp} onChange={(value) => setField("maxPowerHp", value)} />
@@ -136,6 +139,7 @@ function toPayload(settings: ParserSettingsForm) {
   return {
     searchUrlsText: settings.searchUrlsText,
     budgetRub: Number(settings.budgetRub),
+    minYear: Number(settings.minYear),
     maxPriceEur: Number(settings.maxPriceEur),
     maxMileageKm: Number(settings.maxMileageKm),
     maxPowerHp: Number(settings.maxPowerHp),

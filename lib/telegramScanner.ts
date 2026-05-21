@@ -239,8 +239,8 @@ async function extractListingLinks(searchUrl: string, settings: ParserSettings) 
       status: fetched.status,
       htmlLength: fetched.html.length,
       autoscoutMarkers: countMatches(html, /\/angebote\//gi),
-      kleinanzeigenMarkers: countMatches(html, /\/s-anzeige\//gi),
-      listingMarkers: countMatches(html, /(?:list-item|data-guid|firstRegistration|vehicle|angebote|s-anzeige)/gi),
+      kleinanzeigenMarkers: countMatches(html, /(?:\/s-anzeige\/|kleinanzeigen|ebay-kleinanzeigen)/gi),
+      listingMarkers: countMatches(html, /(?:list-item|aditem|data-guid|firstRegistration|vehicle|angebote|s-anzeige|adid|ad-id)/gi),
       links: links.length,
       sampleLinks: links.slice(0, 3)
     }
@@ -274,17 +274,20 @@ function extractAutoScoutLinks(html: string, baseUrl: string) {
 function extractKleinanzeigenLinks(html: string, baseUrl: string) {
   return [
     ...html.matchAll(/href=["']([^"']*\/s-anzeige\/[^"']+)["']/gi),
-    ...html.matchAll(/["'](https?:\/\/[^"']*kleinanzeigen\.[^"']*\/s-anzeige\/[^"']+)["']/gi),
-    ...html.matchAll(/["'](\/s-anzeige\/[^"']+)["']/gi)
+    ...html.matchAll(/(?:href|url|canonicalUrl|link)["']?\s*[:=]\s*["']([^"']*\/s-anzeige\/[^"']+)["']/gi),
+    ...html.matchAll(/["'](https?:\/\/[^"']*(?:kleinanzeigen|ebay-kleinanzeigen)\.[^"']*\/s-anzeige\/[^"']+)["']/gi),
+    ...html.matchAll(/["'](\/s-anzeige\/[^"']+)["']/gi),
+    ...html.matchAll(/(https?:\/\/[^\s"'<>\\]*(?:kleinanzeigen|ebay-kleinanzeigen)\.[^\s"'<>\\]*\/s-anzeige\/[^\s"'<>\\]+)/gi)
   ]
     .map((match) => cleanListingUrl(absoluteUrl(match[1], baseUrl)))
-    .filter((url) => url.includes("kleinanzeigen."));
+    .filter(isKleinanzeigenUrl);
 }
 
 function getSuitability(car: ImportedCar, settings: ParserSettings) {
   const reasons: string[] = [];
   const text = [car.title, car.brand, car.model, car.fuel, car.engineDescription, car.shortDescription, car.reviewText].filter(Boolean).join(" ").toLowerCase();
   if (!car.sourceUrl || !car.brand || !car.model || !car.priceBruttoEur) return { passed: false, reasons, reason: "missing_required_fields" };
+  if (!car.year || car.year < settings.minYear) return { passed: false, reasons, reason: "year" };
   if (excludeMarkers.some((marker) => text.includes(marker))) return { passed: false, reasons, reason: "excluded_marker" };
   if (car.fuel && !/(дизель|бензин|diesel|benzin|petrol|gasoline)/i.test(car.fuel)) return { passed: false, reasons, reason: "fuel" };
   if (car.powerHp && car.powerHp > settings.maxPowerHp) return { passed: false, reasons, reason: "power" };
@@ -294,6 +297,7 @@ function getSuitability(car: ImportedCar, settings: ParserSettings) {
   if (settings.budgetRub && estimatedTotalRub(car) > settings.budgetRub) return { passed: false, reasons, reason: "budget" };
 
   if (car.powerHp) reasons.push(`до ${settings.maxPowerHp} л.с.`);
+  if (car.year) reasons.push(`от ${settings.minYear} года`);
   if (car.engineVolumeCm3) reasons.push("объем подходит");
   if (car.priceBruttoEur) reasons.push("цена в лимите");
   if (car.mileageKm) reasons.push("пробег в лимите");
@@ -339,12 +343,19 @@ function absoluteUrl(url: string, baseUrl: string) {
 }
 
 function cleanListingUrl(url: string) {
-  return url
+  const cleaned = url
     .replace(/\\u002F/g, "/")
     .replace(/\\u0026/g, "&")
     .replace(/\\\//g, "/")
     .replace(/&amp;/g, "&")
     .replace(/[),.;\\]+$/, "");
+  try {
+    const parsed = new URL(cleaned);
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return cleaned;
+  }
 }
 
 function normalizeSearchHtml(html: string) {
@@ -353,6 +364,9 @@ function normalizeSearchHtml(html: string) {
     .replace(/\\u0026/g, "&")
     .replace(/\\\//g, "/")
     .replace(/&quot;/g, "\"")
+    .replace(/&#34;/g, "\"")
+    .replace(/&#x2F;/g, "/")
+    .replace(/&sol;/g, "/")
     .replace(/&amp;/g, "&");
 }
 
@@ -367,6 +381,15 @@ function addSkipped(result: ScanResult, reason: string) {
 
 function uniqueStrings(values: string[]) {
   return [...new Set(values.filter(Boolean))];
+}
+
+function isKleinanzeigenUrl(url: string) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return (host.includes("kleinanzeigen.de") || host.includes("ebay-kleinanzeigen.de")) && url.includes("/s-anzeige/");
+  } catch {
+    return url.includes("kleinanzeigen") && url.includes("/s-anzeige/");
+  }
 }
 
 function formatNumber(value: number) {
