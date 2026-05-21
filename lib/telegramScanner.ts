@@ -4,6 +4,7 @@ import { getExistingCarSourceUrls, normalizeSourceUrl } from "@/lib/cars";
 import { getParserSettings, type ParserSettings } from "@/lib/parserSettings";
 import { candidateIdFromUrl, setCandidateTelegramMessage, upsertCandidate, type TelegramCandidate } from "@/lib/telegramCandidates";
 import { sendTelegramMessage } from "@/lib/telegram";
+import { archiveUnavailableCarLinks, type LinkHealthResult } from "@/lib/linkHealth";
 
 export type ScanResult = {
   sources: number;
@@ -11,6 +12,8 @@ export type ScanResult = {
   imported: number;
   sent: number;
   skipped: number;
+  skippedReasons: Record<string, number>;
+  linkHealth?: LinkHealthResult;
   errors: string[];
   debug?: ScanSourceDebug[];
 };
@@ -54,11 +57,13 @@ export async function scanConfiguredCarSearches(options: { debug?: boolean; sett
     imported: 0,
     sent: 0,
     skipped: 0,
+    skippedReasons: {},
     errors: [],
     debug: options.debug ? [] : undefined
   };
   const rate = await getCachedEnergotransbankEurSellRate();
   const seen = new Set<string>();
+  result.linkHealth = await archiveUnavailableCarLinks();
   const existingCarUrls = await getExistingCarSourceUrls();
 
   for (const sourceUrl of sources) {
@@ -74,10 +79,13 @@ export async function scanConfiguredCarSearches(options: { debug?: boolean; sett
 
     for (const link of links) {
       const normalized = normalizeUrl(link);
-      if (seen.has(normalized)) continue;
+      if (seen.has(normalized)) {
+        addSkipped(result, "duplicate_in_scan");
+        continue;
+      }
       seen.add(normalized);
       if (existingCarUrls.has(normalizeSourceUrl(normalized))) {
-        result.skipped += 1;
+        addSkipped(result, "already_on_site");
         continue;
       }
       result.links += 1;
@@ -90,13 +98,13 @@ export async function scanConfiguredCarSearches(options: { debug?: boolean; sett
 
         const filter = getSuitability(imported, settings);
         if (!filter.passed) {
-          result.skipped += 1;
+          addSkipped(result, filter.reason || "filter");
           continue;
         }
 
         const candidate = await upsertCandidate(imported, sourceUrl);
         if (candidate.status !== "new" || candidate.telegramMessageId) {
-          result.skipped += 1;
+          addSkipped(result, "already_sent_or_closed");
           continue;
         }
 
@@ -234,14 +242,14 @@ function extractKleinanzeigenLinks(html: string, baseUrl: string) {
 function getSuitability(car: ImportedCar, settings: ParserSettings) {
   const reasons: string[] = [];
   const text = [car.title, car.brand, car.model, car.fuel, car.engineDescription, car.shortDescription, car.reviewText].filter(Boolean).join(" ").toLowerCase();
-  if (!car.sourceUrl || !car.brand || !car.model || !car.priceBruttoEur) return { passed: false, reasons };
-  if (excludeMarkers.some((marker) => text.includes(marker))) return { passed: false, reasons };
-  if (car.fuel && !/(дизель|бензин|diesel|benzin|petrol|gasoline)/i.test(car.fuel)) return { passed: false, reasons };
-  if (car.powerHp && car.powerHp > settings.maxPowerHp) return { passed: false, reasons };
-  if (car.engineVolumeCm3 && car.engineVolumeCm3 > settings.maxEngineCc) return { passed: false, reasons };
-  if (car.priceBruttoEur > settings.maxPriceEur) return { passed: false, reasons };
-  if (car.mileageKm && car.mileageKm > settings.maxMileageKm) return { passed: false, reasons };
-  if (settings.budgetRub && estimatedTotalRub(car) > settings.budgetRub) return { passed: false, reasons };
+  if (!car.sourceUrl || !car.brand || !car.model || !car.priceBruttoEur) return { passed: false, reasons, reason: "missing_required_fields" };
+  if (excludeMarkers.some((marker) => text.includes(marker))) return { passed: false, reasons, reason: "excluded_marker" };
+  if (car.fuel && !/(дизель|бензин|diesel|benzin|petrol|gasoline)/i.test(car.fuel)) return { passed: false, reasons, reason: "fuel" };
+  if (car.powerHp && car.powerHp > settings.maxPowerHp) return { passed: false, reasons, reason: "power" };
+  if (car.engineVolumeCm3 && car.engineVolumeCm3 > settings.maxEngineCc) return { passed: false, reasons, reason: "engine_volume" };
+  if (car.priceBruttoEur > settings.maxPriceEur) return { passed: false, reasons, reason: "germany_price" };
+  if (car.mileageKm && car.mileageKm > settings.maxMileageKm) return { passed: false, reasons, reason: "mileage" };
+  if (settings.budgetRub && estimatedTotalRub(car) > settings.budgetRub) return { passed: false, reasons, reason: "budget" };
 
   if (car.powerHp) reasons.push(`до ${settings.maxPowerHp} л.с.`);
   if (car.engineVolumeCm3) reasons.push("объем подходит");
@@ -308,6 +316,11 @@ function normalizeSearchHtml(html: string) {
 
 function normalizeUrl(url: string) {
   return url;
+}
+
+function addSkipped(result: ScanResult, reason: string) {
+  result.skipped += 1;
+  result.skippedReasons[reason] = (result.skippedReasons[reason] || 0) + 1;
 }
 
 function uniqueStrings(values: string[]) {

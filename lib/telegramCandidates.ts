@@ -44,7 +44,7 @@ export async function upsertCandidate(car: ImportedCar, scanSource?: string) {
   await ref.set(
     {
       url: normalizeCandidateUrl(url),
-      car,
+      car: stripUndefined(car),
       scanSource: scanSource || null,
       status: existing?.status || "new",
       telegramMessageId: existing?.telegramMessageId || null,
@@ -243,4 +243,18 @@ function dateValue(value: unknown) {
   if (value instanceof Timestamp) return value.toDate().toISOString();
   if (value instanceof Date) return value.toISOString();
   return null;
+}
+
+function stripUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripUndefined(item)).filter((item) => item !== undefined) as T;
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entry]) => entry !== undefined)
+        .map(([key, entry]) => [key, stripUndefined(entry)])
+    ) as T;
+  }
+  return value;
 }
