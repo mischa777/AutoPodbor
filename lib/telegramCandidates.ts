@@ -108,6 +108,35 @@ export async function skipCandidate(id: string) {
   );
 }
 
+export async function updateCandidateCarField(id: string, field: string, value: string | number | null) {
+  const allowedFields = new Set([
+    "title",
+    "brand",
+    "model",
+    "year",
+    "mileageKm",
+    "bodyType",
+    "engineDescription",
+    "engineVolumeCm3",
+    "powerHp",
+    "transmission",
+    "fuel",
+    "priceBruttoEur",
+    "priceNettoEur",
+    "location",
+    "shortDescription",
+    "reviewText"
+  ]);
+  if (!allowedFields.has(field)) throw new Error("This field cannot be edited from Telegram.");
+  await getAdminFirestore().collection(collectionName).doc(id).set(
+    {
+      [`car.${field}`]: value,
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  );
+}
+
 export function toCarInput(car: ImportedCar, content?: GeneratedCarContent): CarInput {
   const title = car.title || [car.brand, car.model, car.year].filter(Boolean).join(" ");
   return {

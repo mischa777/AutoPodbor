@@ -123,6 +123,7 @@ export async function scanConfiguredCarSearches(options: { debug?: boolean; sett
 export function candidateKeyboard(candidateId: string, sourceUrl?: string) {
   return [
     [{ text: "Сформировать описание", callback_data: `describe:${candidateId}` }],
+    [{ text: "Редактировать", callback_data: `editmenu:candidate:${candidateId}` }],
     [{ text: "Добавить в подборку", callback_data: `publish:${candidateId}` }],
     [
       ...(sourceUrl ? [{ text: "Открыть объявление", url: sourceUrl }] : []),
@@ -133,12 +134,53 @@ export function candidateKeyboard(candidateId: string, sourceUrl?: string) {
 
 export function candidateAfterDescriptionKeyboard(candidateId: string, sourceUrl?: string) {
   return [
+    [{ text: "Редактировать", callback_data: `editmenu:candidate:${candidateId}` }],
     [{ text: "Добавить в подборку", callback_data: `publish:${candidateId}` }],
     [
       ...(sourceUrl ? [{ text: "Открыть объявление", url: sourceUrl }] : []),
       { text: "Пропустить", callback_data: `skip:${candidateId}` }
     ]
   ].filter((row) => row.length);
+}
+
+export function publishedCarKeyboard(carId: string) {
+  return [
+    [
+      { text: "Доступно", callback_data: `status:${carId}:available` },
+      { text: "Проверяется", callback_data: `status:${carId}:checking` }
+    ],
+    [
+      { text: "Продано", callback_data: `status:${carId}:sold` },
+      { text: "Архив", callback_data: `status:${carId}:archived` }
+    ],
+    [{ text: "Редактировать", callback_data: `editmenu:car:${carId}` }]
+  ];
+}
+
+export function editFieldKeyboard(targetType: "candidate" | "car", targetId: string) {
+  const prefix = `edit:${targetType}:${targetId}`;
+  return [
+    [
+      { text: "Название", callback_data: `${prefix}:title` },
+      { text: "Цена", callback_data: `${prefix}:priceBruttoEur` }
+    ],
+    [
+      { text: "Пробег", callback_data: `${prefix}:mileageKm` },
+      { text: "Объем", callback_data: `${prefix}:engineVolumeCm3` }
+    ],
+    [
+      { text: "Мощность", callback_data: `${prefix}:powerHp` },
+      { text: "Двигатель", callback_data: `${prefix}:engineDescription` }
+    ],
+    [
+      { text: "Топливо", callback_data: `${prefix}:fuel` },
+      { text: "Коробка", callback_data: `${prefix}:transmission` }
+    ],
+    [
+      { text: "Локация", callback_data: `${prefix}:location` },
+      { text: "Описание", callback_data: `${prefix}:shortDescription` }
+    ]
+  ];
 }
 
 export function formatCandidateMessage(candidate: TelegramCandidate, reasons: string[] = []) {

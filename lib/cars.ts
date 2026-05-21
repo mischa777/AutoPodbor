@@ -67,6 +67,46 @@ export async function archiveCar(id: string) {
   );
 }
 
+export async function updateCarStatus(id: string, status: CarStatus) {
+  await getAdminFirestore().collection(carsCollection).doc(id).set(
+    {
+      status,
+      isFeatured: status === "available" || status === "checking",
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  );
+}
+
+export async function updateCarEditableField(id: string, field: string, value: string | number | null) {
+  const allowedFields = new Set([
+    "title",
+    "brand",
+    "model",
+    "year",
+    "mileageKm",
+    "bodyType",
+    "engineDescription",
+    "engineVolumeCm3",
+    "powerHp",
+    "transmission",
+    "fuel",
+    "priceBruttoEur",
+    "priceNettoEur",
+    "location",
+    "shortDescription",
+    "reviewText"
+  ]);
+  if (!allowedFields.has(field)) throw new Error("This field cannot be edited from Telegram.");
+  await getAdminFirestore().collection(carsCollection).doc(id).set(
+    {
+      [field]: value,
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  );
+}
+
 export async function getExistingCarSourceUrls() {
   const snapshot = await getAdminFirestore().collection(carsCollection).select("sourceUrl").get();
   return new Set(

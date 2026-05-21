@@ -30,6 +30,14 @@ export type TelegramCallbackQuery = {
   };
 };
 
+export type TelegramTextMessage = {
+  message_id: number;
+  text?: string;
+  chat: {
+    id: number | string;
+  };
+};
+
 export function hasTelegramConfig() {
   return Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID);
 }
