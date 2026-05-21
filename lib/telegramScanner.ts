@@ -1,5 +1,7 @@
 import { getCachedEnergotransbankEurSellRate } from "@/lib/exchangeRate";
 import { importCarFromUrl, type ImportedCar } from "@/lib/importCar";
+import { getExistingCarSourceUrls, normalizeSourceUrl } from "@/lib/cars";
+import { getParserSettings, type ParserSettings } from "@/lib/parserSettings";
 import { candidateIdFromUrl, setCandidateTelegramMessage, upsertCandidate, type TelegramCandidate } from "@/lib/telegramCandidates";
 import { sendTelegramMessage } from "@/lib/telegram";
 
@@ -43,8 +45,9 @@ const excludeMarkers = [
   "totalschaden"
 ];
 
-export async function scanConfiguredCarSearches(options: { debug?: boolean } = {}): Promise<ScanResult> {
-  const sources = expandSearchPages(getScanUrls());
+export async function scanConfiguredCarSearches(options: { debug?: boolean; settings?: ParserSettings } = {}): Promise<ScanResult> {
+  const settings = options.settings || await getParserSettings();
+  const sources = expandSearchPages(settings.searchUrls, settings.scanPages);
   const result: ScanResult = {
     sources: sources.length,
     links: 0,
@@ -56,11 +59,12 @@ export async function scanConfiguredCarSearches(options: { debug?: boolean } = {
   };
   const rate = await getCachedEnergotransbankEurSellRate();
   const seen = new Set<string>();
+  const existingCarUrls = await getExistingCarSourceUrls();
 
   for (const sourceUrl of sources) {
     let links: string[] = [];
     try {
-      const extracted = await extractListingLinks(sourceUrl);
+      const extracted = await extractListingLinks(sourceUrl, settings);
       links = extracted.links;
       if (options.debug) result.debug?.push(extracted.debug);
     } catch (error) {
@@ -72,6 +76,10 @@ export async function scanConfiguredCarSearches(options: { debug?: boolean } = {
       const normalized = normalizeUrl(link);
       if (seen.has(normalized)) continue;
       seen.add(normalized);
+      if (existingCarUrls.has(normalizeSourceUrl(normalized))) {
+        result.skipped += 1;
+        continue;
+      }
       result.links += 1;
 
       try {
@@ -80,7 +88,7 @@ export async function scanConfiguredCarSearches(options: { debug?: boolean } = {
         imported.exchangeRateSource = rate.source;
         result.imported += 1;
 
-        const filter = getSuitability(imported);
+        const filter = getSuitability(imported, settings);
         if (!filter.passed) {
           result.skipped += 1;
           continue;
@@ -169,11 +177,11 @@ export function formatCandidateWithContent(candidate: TelegramCandidate) {
   ].join("\n");
 }
 
-async function extractListingLinks(searchUrl: string) {
+async function extractListingLinks(searchUrl: string, settings: ParserSettings) {
   const fetched = await fetchSearchHtml(searchUrl);
   const html = normalizeSearchHtml(fetched.html);
   const links = uniqueStrings([...extractAutoScoutLinks(html, searchUrl), ...extractKleinanzeigenLinks(html, searchUrl)])
-    .slice(0, getNumberEnv("CAR_SCAN_MAX_LINKS", 30));
+    .slice(0, settings.maxLinks);
   return {
     links,
     debug: {
@@ -223,33 +231,27 @@ function extractKleinanzeigenLinks(html: string, baseUrl: string) {
     .filter((url) => url.includes("kleinanzeigen."));
 }
 
-function getSuitability(car: ImportedCar) {
+function getSuitability(car: ImportedCar, settings: ParserSettings) {
   const reasons: string[] = [];
   const text = [car.title, car.brand, car.model, car.fuel, car.engineDescription, car.shortDescription, car.reviewText].filter(Boolean).join(" ").toLowerCase();
   if (!car.sourceUrl || !car.brand || !car.model || !car.priceBruttoEur) return { passed: false, reasons };
   if (excludeMarkers.some((marker) => text.includes(marker))) return { passed: false, reasons };
   if (car.fuel && !/(дизель|бензин|diesel|benzin|petrol|gasoline)/i.test(car.fuel)) return { passed: false, reasons };
-  if (car.powerHp && car.powerHp > getNumberEnv("CAR_SCAN_MAX_POWER_HP", 160)) return { passed: false, reasons };
-  if (car.engineVolumeCm3 && car.engineVolumeCm3 > getNumberEnv("CAR_SCAN_MAX_ENGINE_CC", 1900)) return { passed: false, reasons };
-  if (car.priceBruttoEur > getNumberEnv("CAR_SCAN_MAX_PRICE_EUR", 15000)) return { passed: false, reasons };
-  if (car.mileageKm && car.mileageKm > getNumberEnv("CAR_SCAN_MAX_MILEAGE_KM", 180000)) return { passed: false, reasons };
+  if (car.powerHp && car.powerHp > settings.maxPowerHp) return { passed: false, reasons };
+  if (car.engineVolumeCm3 && car.engineVolumeCm3 > settings.maxEngineCc) return { passed: false, reasons };
+  if (car.priceBruttoEur > settings.maxPriceEur) return { passed: false, reasons };
+  if (car.mileageKm && car.mileageKm > settings.maxMileageKm) return { passed: false, reasons };
+  if (settings.budgetRub && estimatedTotalRub(car) > settings.budgetRub) return { passed: false, reasons };
 
-  if (car.powerHp) reasons.push(`до ${getNumberEnv("CAR_SCAN_MAX_POWER_HP", 160)} л.с.`);
+  if (car.powerHp) reasons.push(`до ${settings.maxPowerHp} л.с.`);
   if (car.engineVolumeCm3) reasons.push("объем подходит");
   if (car.priceBruttoEur) reasons.push("цена в лимите");
   if (car.mileageKm) reasons.push("пробег в лимите");
+  if (settings.budgetRub) reasons.push("в бюджете");
   return { passed: true, reasons };
 }
 
-function getScanUrls() {
-  return uniqueStrings((process.env.CAR_SCAN_URLS || "")
-    .split(/[\n,]+/)
-    .map((url) => url.trim())
-    .filter(Boolean));
-}
-
-function expandSearchPages(urls: string[]) {
-  const pages = Math.max(1, getNumberEnv("CAR_SCAN_PAGES", 1));
+function expandSearchPages(urls: string[], pages: number) {
   if (pages === 1) return urls;
   return urls.flatMap((url) => {
     try {
@@ -318,11 +320,6 @@ function formatNumber(value: number) {
 
 function countMatches(text: string, pattern: RegExp) {
   return [...text.matchAll(pattern)].length;
-}
-
-function getNumberEnv(name: string, fallback: number) {
-  const parsed = Number(process.env[name]);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function errorMessage(error: unknown) {

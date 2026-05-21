@@ -56,6 +56,42 @@ export async function deleteCar(id: string) {
   await getAdminFirestore().collection(carsCollection).doc(id).delete();
 }
 
+export async function archiveCar(id: string) {
+  await getAdminFirestore().collection(carsCollection).doc(id).set(
+    {
+      status: "archived",
+      isFeatured: false,
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  );
+}
+
+export async function getExistingCarSourceUrls() {
+  const snapshot = await getAdminFirestore().collection(carsCollection).select("sourceUrl").get();
+  return new Set(
+    snapshot.docs
+      .map((doc) => optionalStringValue(doc.get("sourceUrl")))
+      .filter((url): url is string => Boolean(url))
+      .map(normalizeSourceUrl)
+  );
+}
+
+export function normalizeSourceUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.delete("position");
+    parsed.searchParams.delete("source");
+    parsed.searchParams.delete("source_otp");
+    parsed.searchParams.delete("relevance_adjustment");
+    parsed.searchParams.delete("boosting_product");
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 function normalizeCarInput(data: CarInput): CarInput {
   return {
     ...data,
