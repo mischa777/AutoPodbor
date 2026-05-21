@@ -16,9 +16,11 @@ import {
   editFieldKeyboard,
   formatCandidateMessage,
   formatCandidateWithContent,
-  publishedCarKeyboard
+  publishedCarKeyboard,
+  renderTelegramQueue
 } from "@/lib/telegramScanner";
 import { generateCandidateContent, getCandidate, publishCandidate, skipCandidate } from "@/lib/telegramCandidates";
+import { moveTelegramQueue, removeCurrentFromTelegramQueue } from "@/lib/telegramQueue";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -52,8 +54,9 @@ export async function POST(request: Request) {
     if (action === "describe") {
       const candidateId = parts[0];
       await answerCallbackQuery(callback.id, "Готовлю описание");
-      const candidate = await generateCandidateContent(candidateId);
-      await editTelegramMessage(chatId, messageId, formatCandidateWithContent(candidate), candidateAfterDescriptionKeyboard(candidate.id, candidate.car.sourceUrl));
+      await generateCandidateContent(candidateId);
+      const rendered = await renderTelegramQueue();
+      await editTelegramMessage(chatId, messageId, rendered.text, rendered.keyboard);
       return NextResponse.json({ ok: true });
     }
 
@@ -61,6 +64,7 @@ export async function POST(request: Request) {
       const candidateId = parts[0];
       await answerCallbackQuery(callback.id, "Добавляю в подборку");
       const carId = await publishCandidate(candidateId);
+      await removeCurrentFromTelegramQueue();
       const candidate = await getCandidate(candidateId);
       await editTelegramMessage(
         chatId,
@@ -75,8 +79,18 @@ export async function POST(request: Request) {
       const candidateId = parts[0];
       await answerCallbackQuery(callback.id, "Пропущено");
       await skipCandidate(candidateId);
-      const candidate = await getCandidate(candidateId);
-      await editTelegramMessage(chatId, messageId, candidate ? `Пропущено.\n\n${formatCandidateMessage(candidate)}` : "Пропущено.");
+      const queue = await removeCurrentFromTelegramQueue();
+      const rendered = await renderTelegramQueue(queue);
+      await editTelegramMessage(chatId, messageId, rendered.text, rendered.keyboard);
+      return NextResponse.json({ ok: true });
+    }
+
+    if (action === "queue") {
+      const direction = parts[0];
+      await answerCallbackQuery(callback.id, "Показываю следующий вариант");
+      const queue = await moveTelegramQueue(direction === "prev" ? -1 : 1);
+      const rendered = await renderTelegramQueue(queue);
+      await editTelegramMessage(chatId, messageId, rendered.text, rendered.keyboard);
       return NextResponse.json({ ok: true });
     }
 
@@ -98,6 +112,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
+    if (action === "canceledit") {
+      const session = await getTelegramEditSession(chatId);
+      await clearTelegramEditSession(chatId);
+      await answerCallbackQuery(callback.id, "Редактирование отменено");
+      if (session?.targetType === "car") {
+        const car = await getCarById(session.targetId);
+        await editTelegramMessage(chatId, messageId, car ? formatPublishedCarMessage(car) : "Редактирование отменено.", publishedCarKeyboard(session.targetId));
+      } else {
+        const rendered = await renderTelegramQueue();
+        await editTelegramMessage(chatId, messageId, rendered.text, rendered.keyboard);
+      }
+      return NextResponse.json({ ok: true });
+    }
+
     if (action === "edit") {
       const [targetType, targetId, field] = parts;
       if (!isEditTargetType(targetType) || !isEditableTelegramField(field)) throw new Error("Unknown edit field.");
@@ -111,6 +139,7 @@ export async function POST(request: Request) {
         promptMessageId: prompt.message_id
       });
       await answerCallbackQuery(callback.id, "Жду новое значение");
+      await editTelegramMessage(chatId, messageId, `Жду новое значение для поля: ${editableFieldLabels[field]}`, [[{ text: "Отмена", callback_data: "canceledit" }]]);
       return NextResponse.json({ ok: true });
     }
 

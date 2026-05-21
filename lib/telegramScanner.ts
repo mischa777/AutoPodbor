@@ -3,8 +3,9 @@ import { importCarFromUrl, type ImportedCar } from "@/lib/importCar";
 import { getExistingCarSourceUrls, normalizeSourceUrl } from "@/lib/cars";
 import { getParserSettings, type ParserSettings } from "@/lib/parserSettings";
 import { candidateIdFromUrl, setCandidateTelegramMessage, upsertCandidate, type TelegramCandidate } from "@/lib/telegramCandidates";
-import { sendTelegramMessage } from "@/lib/telegram";
+import { editTelegramMessage, sendTelegramMessage } from "@/lib/telegram";
 import { archiveUnavailableCarLinks, type LinkHealthResult } from "@/lib/linkHealth";
+import { appendTelegramQueue, getTelegramQueue, setTelegramQueueMessage, type TelegramQueue } from "@/lib/telegramQueue";
 
 export type ScanResult = {
   sources: number;
@@ -63,6 +64,7 @@ export async function scanConfiguredCarSearches(options: { debug?: boolean; sett
   };
   const rate = await getCachedEnergotransbankEurSellRate();
   const seen = new Set<string>();
+  const queuedCandidateIds: string[] = [];
   result.linkHealth = await archiveUnavailableCarLinks();
   const existingCarUrls = await getExistingCarSourceUrls();
 
@@ -108,8 +110,7 @@ export async function scanConfiguredCarSearches(options: { debug?: boolean; sett
           continue;
         }
 
-        const message = await sendTelegramMessage(formatCandidateMessage(candidate, filter.reasons), candidateKeyboard(candidate.id, imported.sourceUrl));
-        await setCandidateTelegramMessage(candidate.id, message.message_id);
+        queuedCandidateIds.push(candidate.id);
         result.sent += 1;
       } catch (error) {
         result.errors.push(`${normalized}: ${errorMessage(error)}`);
@@ -117,6 +118,7 @@ export async function scanConfiguredCarSearches(options: { debug?: boolean; sett
     }
   }
 
+  await publishTelegramQueue(queuedCandidateIds);
   return result;
 }
 
@@ -125,10 +127,7 @@ export function candidateKeyboard(candidateId: string, sourceUrl?: string) {
     [{ text: "Сформировать описание", callback_data: `describe:${candidateId}` }],
     [{ text: "Редактировать", callback_data: `editmenu:candidate:${candidateId}` }],
     [{ text: "Добавить в подборку", callback_data: `publish:${candidateId}` }],
-    [
-      ...(sourceUrl ? [{ text: "Открыть объявление", url: sourceUrl }] : []),
-      { text: "Пропустить", callback_data: `skip:${candidateId}` }
-    ]
+    queueNavigationRow(candidateId, sourceUrl)
   ].filter((row) => row.length);
 }
 
@@ -136,10 +135,7 @@ export function candidateAfterDescriptionKeyboard(candidateId: string, sourceUrl
   return [
     [{ text: "Редактировать", callback_data: `editmenu:candidate:${candidateId}` }],
     [{ text: "Добавить в подборку", callback_data: `publish:${candidateId}` }],
-    [
-      ...(sourceUrl ? [{ text: "Открыть объявление", url: sourceUrl }] : []),
-      { text: "Пропустить", callback_data: `skip:${candidateId}` }
-    ]
+    queueNavigationRow(candidateId, sourceUrl)
   ].filter((row) => row.length);
 }
 
@@ -179,7 +175,62 @@ export function editFieldKeyboard(targetType: "candidate" | "car", targetId: str
     [
       { text: "Локация", callback_data: `${prefix}:location` },
       { text: "Описание", callback_data: `${prefix}:shortDescription` }
-    ]
+    ],
+    [{ text: "Отмена", callback_data: "canceledit" }]
+  ];
+}
+
+export async function renderTelegramQueue(queue?: TelegramQueue | null) {
+  const currentQueue = queue || await getTelegramQueue();
+  if (!currentQueue?.candidateIds.length) {
+    return {
+      text: "Очередь пуста. Новые подходящие варианты появятся здесь после следующего запуска парсера.",
+      keyboard: undefined
+    };
+  }
+  const candidateId = currentQueue.candidateIds[currentQueue.currentIndex];
+  const candidate = await import("@/lib/telegramCandidates").then((module) => module.getCandidate(candidateId));
+  if (!candidate) {
+    return {
+      text: "Кандидат из очереди не найден. Нажмите следующий.",
+      keyboard: [[{ text: "Следующий", callback_data: "queue:next" }]]
+    };
+  }
+
+  const text = [
+    `Вариант ${currentQueue.currentIndex + 1} из ${currentQueue.candidateIds.length}`,
+    "",
+    candidate.content ? formatCandidateWithContent(candidate) : formatCandidateMessage(candidate)
+  ].join("\n");
+  const keyboard = candidate.content
+    ? candidateAfterDescriptionKeyboard(candidate.id, candidate.car.sourceUrl)
+    : candidateKeyboard(candidate.id, candidate.car.sourceUrl);
+  return { text, keyboard };
+}
+
+export async function publishTelegramQueue(candidateIds: string[]) {
+  const queue = await appendTelegramQueue(candidateIds);
+  if (!queue?.candidateIds.length) return;
+  const rendered = await renderTelegramQueue(queue);
+  if (queue.messageId) {
+    try {
+      await editTelegramMessage(process.env.TELEGRAM_CHAT_ID || "", queue.messageId, rendered.text, rendered.keyboard);
+      return;
+    } catch {
+      // If Telegram cannot edit an old message, send a fresh queue message below.
+    }
+  }
+  const message = await sendTelegramMessage(rendered.text, rendered.keyboard);
+  await setTelegramQueueMessage(message.message_id);
+  const candidateId = queue.candidateIds[queue.currentIndex];
+  if (candidateId) await setCandidateTelegramMessage(candidateId, message.message_id);
+}
+
+function queueNavigationRow(candidateId: string, sourceUrl?: string) {
+  return [
+    ...(sourceUrl ? [{ text: "Открыть", url: sourceUrl }] : []),
+    { text: "Пропустить", callback_data: `skip:${candidateId}` },
+    { text: "Следующий", callback_data: "queue:next" }
   ];
 }
 
