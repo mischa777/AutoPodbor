@@ -33,6 +33,9 @@ export type TelegramCallbackQuery = {
 export type TelegramTextMessage = {
   message_id: number;
   text?: string;
+  reply_to_message?: {
+    message_id: number;
+  };
   chat: {
     id: number | string;
   };
@@ -49,6 +52,17 @@ export async function sendTelegramMessage(text: string, keyboard?: InlineKeyboar
     text: trimTelegramText(text),
     disable_web_page_preview: false,
     reply_markup: keyboard ? { inline_keyboard: keyboard } : undefined
+  });
+}
+
+export async function sendTelegramForceReply(chatId: number | string, text: string) {
+  return telegramRequest<TelegramMessage>("sendMessage", {
+    chat_id: chatId,
+    text: trimTelegramText(text),
+    reply_markup: {
+      force_reply: true,
+      selective: true
+    }
   });
 }
 

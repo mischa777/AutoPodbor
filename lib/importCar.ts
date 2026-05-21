@@ -117,7 +117,7 @@ export async function importCarFromUrl(url: string, eurRubRate = 100): Promise<I
   const listing = extractListingFromHtml(html, parsedUrl.toString(), source);
   validateListing(listing, source);
   const calc = calculateImportCost(listing, eurRubRate);
-  const title = listing.title || [listing.brand, listing.model, listing.firstRegistrationYear].filter(Boolean).join(" ");
+  const title = buildListingTitle(listing);
   const fuel = translateFuel(listing.fuelType);
   const transmission = translateTransmission(listing.gearbox);
 
@@ -320,6 +320,9 @@ function validateListing(listing: NormalizedListing, source: { label: string }) 
   if (genericTitle(listing.title)) {
     listing.title = [listing.brand, listing.model, listing.firstRegistrationYear].filter(Boolean).join(" ") || undefined;
   }
+  if (isInvalidModelName(listing.model)) {
+    listing.model = undefined;
+  }
 
   if (listing.engineCc && (listing.engineCc < 500 || listing.engineCc > 8000)) {
     listing.engineCc = undefined;
@@ -344,6 +347,42 @@ function validateListing(listing: NormalizedListing, source: { label: string }) 
   if (!listing.brand || !listing.model || !listing.priceEur) {
     throw new Error(`${source.label} returned partial listing data on this host. The importer refused to fill the form with unreliable values.`);
   }
+}
+
+function buildListingTitle(listing: NormalizedListing) {
+  const fallback = [listing.brand, listing.model, listing.firstRegistrationYear].filter(Boolean).join(" ");
+  const cleaned = cleanListingTitle(listing.title);
+  if (!cleaned) return fallback;
+  if (titleLooksPriceOnly(cleaned) || titleLooksLikeGenericMarketplaceTitle(cleaned)) return fallback || cleaned;
+  if (fallback && listing.brand && cleaned.toLowerCase() === listing.brand.toLowerCase()) return fallback;
+  if (fallback && listing.model && !cleaned.toLowerCase().includes(listing.model.toLowerCase())) return fallback;
+  return cleaned;
+}
+
+function cleanListingTitle(title?: string) {
+  if (!title) return undefined;
+  return normalizeSpaces(title
+    .replace(/\s*\|\s*AutoScout24.*$/i, "")
+    .replace(/\s*\|\s*kleinanzeigen\.de.*$/i, "")
+    .replace(/\s+gebraucht\s+in\s+.+$/i, "")
+    .replace(/\s+für\s+€\s*[\d.\s]+.*$/i, "")
+    .replace(/\s+for\s+€\s*[\d.\s]+.*$/i, "")
+    .replace(/\s+€\s*[\d.\s]+.*$/i, ""));
+}
+
+function titleLooksPriceOnly(title: string) {
+  const lower = title.toLowerCase();
+  return /(?:^|\s)(?:für|for)\s*€\s*[\d.\s]+/.test(lower) || /^€\s*[\d.\s]+/.test(lower);
+}
+
+function titleLooksLikeGenericMarketplaceTitle(title: string) {
+  const lower = title.toLowerCase();
+  return lower === "autoscout24" || lower === "kleinanzeigen" || lower.includes("auto kaufen");
+}
+
+function isInvalidModelName(value?: string) {
+  const lower = normalizeSpaces(value || "").toLowerCase();
+  return !lower || ["für", "for", "in", "gebraucht", "€", "eur"].includes(lower);
 }
 
 function listingRelevanceScore(listing: NormalizedListing) {
@@ -433,7 +472,7 @@ function extractBrandModel(title: string) {
   })).find((entry) => entry.match);
   return {
     brand: match?.brand,
-    model: match?.match?.[1]
+    model: isInvalidModelName(match?.match?.[1]) ? undefined : match?.match?.[1]
   };
 }
 

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { updateCarStatus, type CarStatus } from "@/lib/cars";
-import { answerCallbackQuery, editTelegramMessage, type TelegramCallbackQuery, type TelegramTextMessage } from "@/lib/telegram";
+import { getCarById, updateCarStatus, type CarStatus, type CarWithRelations } from "@/lib/cars";
+import { answerCallbackQuery, editTelegramMessage, sendTelegramForceReply, type TelegramCallbackQuery, type TelegramTextMessage } from "@/lib/telegram";
 import {
   applyTelegramEdit,
   clearTelegramEditSession,
@@ -85,7 +85,8 @@ export async function POST(request: Request) {
       if (!isCarStatus(status)) throw new Error("Unknown status.");
       await answerCallbackQuery(callback.id, "Статус обновлен");
       await updateCarStatus(carId, status);
-      await editTelegramMessage(chatId, messageId, `Статус обновлен: ${statusLabel(status)}\nID: ${carId}`, publishedCarKeyboard(carId));
+      const car = await getCarById(carId);
+      await editTelegramMessage(chatId, messageId, car ? formatPublishedCarMessage(car) : `Статус обновлен: ${statusLabel(status)}\nID: ${carId}`, publishedCarKeyboard(carId));
       return NextResponse.json({ ok: true });
     }
 
@@ -100,15 +101,16 @@ export async function POST(request: Request) {
     if (action === "edit") {
       const [targetType, targetId, field] = parts;
       if (!isEditTargetType(targetType) || !isEditableTelegramField(field)) throw new Error("Unknown edit field.");
+      const prompt = await sendTelegramForceReply(chatId, `Ответьте на это сообщение новым значением для поля: ${editableFieldLabels[field]}`);
       await setTelegramEditSession({
         chatId: String(chatId),
         targetType,
         targetId,
         field,
-        messageId
+        messageId,
+        promptMessageId: prompt.message_id
       });
       await answerCallbackQuery(callback.id, "Жду новое значение");
-      await editTelegramMessage(chatId, messageId, `Пришлите новое значение для поля: ${editableFieldLabels[field]}`);
       return NextResponse.json({ ok: true });
     }
 
@@ -126,6 +128,7 @@ export async function POST(request: Request) {
 async function handleTextMessage(message: TelegramTextMessage) {
   const session = await getTelegramEditSession(message.chat.id);
   if (!session || !message.text) return;
+  if (session.promptMessageId && message.reply_to_message?.message_id !== session.promptMessageId) return;
   const updatedCandidate = await applyTelegramEdit(session, message.text);
   await clearTelegramEditSession(message.chat.id);
 
@@ -138,12 +141,8 @@ async function handleTextMessage(message: TelegramTextMessage) {
     return;
   }
 
-  await editTelegramMessage(
-    message.chat.id,
-    session.messageId,
-    `Поле обновлено: ${editableFieldLabels[session.field]}\nID: ${session.targetId}`,
-    publishedCarKeyboard(session.targetId)
-  );
+  const car = await getCarById(session.targetId);
+  await editTelegramMessage(message.chat.id, session.messageId, car ? formatPublishedCarMessage(car) : `Поле обновлено: ${editableFieldLabels[session.field]}\nID: ${session.targetId}`, publishedCarKeyboard(session.targetId));
 }
 
 function isAllowedTelegramRequest(request: Request) {
@@ -166,4 +165,29 @@ function statusLabel(status: CarStatus) {
   if (status === "checking") return "проверяется";
   if (status === "sold") return "продано";
   return "архив";
+}
+
+function formatPublishedCarMessage(car: CarWithRelations) {
+  return [
+    "Машина в подборке",
+    "",
+    car.title || [car.brand, car.model, car.year].filter(Boolean).join(" "),
+    [
+      car.year ? `${car.year} г.` : undefined,
+      car.mileageKm ? `${formatNumber(car.mileageKm)} км` : undefined,
+      car.fuel,
+      car.powerHp ? `${car.powerHp} л.с.` : undefined,
+      car.engineVolumeCm3 ? `${formatNumber(car.engineVolumeCm3)} см3` : undefined,
+      car.transmission
+    ].filter(Boolean).join(" | "),
+    car.priceBruttoEur ? `Цена: ${formatNumber(car.priceBruttoEur)} EUR brutto` : undefined,
+    car.priceNettoEur ? `Netto: ${formatNumber(car.priceNettoEur)} EUR` : undefined,
+    car.location ? `Локация: ${car.location}` : undefined,
+    `Статус: ${statusLabel(car.status)}`,
+    `ID: ${car.id}`
+  ].filter(Boolean).join("\n");
+}
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(value);
 }

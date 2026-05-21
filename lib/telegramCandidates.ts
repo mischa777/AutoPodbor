@@ -128,12 +128,11 @@ export async function updateCandidateCarField(id: string, field: string, value: 
     "reviewText"
   ]);
   if (!allowedFields.has(field)) throw new Error("This field cannot be edited from Telegram.");
-  await getAdminFirestore().collection(collectionName).doc(id).set(
+  await getAdminFirestore().collection(collectionName).doc(id).update(
     {
       [`car.${field}`]: value,
       updatedAt: FieldValue.serverTimestamp()
-    },
-    { merge: true }
+    }
   );
 }
 

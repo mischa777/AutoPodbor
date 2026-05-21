@@ -11,6 +11,7 @@ export type TelegramEditSession = {
   targetId: string;
   field: EditableTelegramField;
   messageId: number;
+  promptMessageId?: number | null;
   createdAt?: string | null;
 };
 
@@ -64,6 +65,7 @@ export async function getTelegramEditSession(chatId: number | string) {
     targetId: String(data.targetId || ""),
     field,
     messageId: Number(data.messageId || 0),
+    promptMessageId: optionalNumber(data.promptMessageId),
     createdAt: dateValue(data.createdAt)
   } satisfies TelegramEditSession;
 }
@@ -101,4 +103,9 @@ function dateValue(value: unknown) {
   if (value instanceof Timestamp) return value.toDate().toISOString();
   if (value instanceof Date) return value.toISOString();
   return null;
+}
+
+function optionalNumber(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
